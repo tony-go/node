@@ -28,6 +28,7 @@ class BreakIterator;
 class Collator;
 class FormattedValue;
 class StringEnumeration;
+class TimeZone;
 class UnicodeString;
 }  // namespace U_ICU_NAMESPACE
 
@@ -100,8 +101,9 @@ class Intl {
     kNone,
     kTryFastPath,
   };
+  template <class IsolateT>
   V8_EXPORT_PRIVATE static CompareStringsOptions CompareStringsOptionsFor(
-      Isolate* isolate, Handle<Object> locales, Handle<Object> options);
+      IsolateT* isolate, Handle<Object> locales, Handle<Object> options);
   V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT static int CompareStrings(
       Isolate* isolate, const icu::Collator& collator, Handle<String> s1,
       Handle<String> s2,
@@ -273,6 +275,10 @@ class Intl {
 
   static const uint8_t* ToLatin1LowerTable();
 
+  static const uint8_t* AsciiCollationWeightsL1();
+  static const uint8_t* AsciiCollationWeightsL3();
+  static const int kAsciiCollationWeightsLength;
+
   static String ConvertOneByteToLower(String src, String dst);
 
   static const std::set<std::string>& GetAvailableLocales();
@@ -290,6 +296,22 @@ class Intl {
 
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSArray> AvailableCalendars(
       Isolate* isolate);
+
+  V8_WARN_UNUSED_RESULT static bool IsValidTimeZoneName(
+      const icu::TimeZone& tz);
+  V8_WARN_UNUSED_RESULT static bool IsValidTimeZoneName(Isolate* isolate,
+                                                        const std::string& id);
+  V8_WARN_UNUSED_RESULT static bool IsValidTimeZoneName(Isolate* isolate,
+                                                        Handle<String> id);
+
+  // Function to support Temporal
+  V8_WARN_UNUSED_RESULT static std::string TimeZoneIdFromIndex(int32_t index);
+
+  V8_WARN_UNUSED_RESULT static Maybe<bool> GetTimeZoneIndex(
+      Isolate* isolate, Handle<String> identifier, int32_t* index);
+
+  V8_WARN_UNUSED_RESULT static MaybeHandle<String> CanonicalizeTimeZoneName(
+      Isolate* isolate, Handle<String> identifier);
 };
 
 }  // namespace internal

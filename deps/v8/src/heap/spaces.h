@@ -7,7 +7,6 @@
 
 #include <atomic>
 #include <memory>
-#include <vector>
 
 #include "src/base/iterator.h"
 #include "src/base/macros.h"
@@ -61,8 +60,7 @@ class SemiSpace;
 // collection. The large object space is paged. Pages in large object space
 // may be larger than the page size.
 //
-// A store-buffer based write barrier is used to keep track of intergenerational
-// references.  See heap/store-buffer.h.
+// A remembered set is used to keep track of intergenerational references.
 //
 // During scavenges and mark-sweep collections we sometimes (after a store
 // buffer overflow) iterate intergenerational pointers without decoding heap
@@ -171,13 +169,22 @@ class V8_EXPORT_PRIVATE Space : public BaseSpace {
     return external_backing_store_bytes_[type];
   }
 
-  MemoryChunk* first_page() { return memory_chunk_list_.front(); }
-  MemoryChunk* last_page() { return memory_chunk_list_.back(); }
+  virtual MemoryChunk* first_page() { return memory_chunk_list_.front(); }
+  virtual MemoryChunk* last_page() { return memory_chunk_list_.back(); }
 
-  const MemoryChunk* first_page() const { return memory_chunk_list_.front(); }
-  const MemoryChunk* last_page() const { return memory_chunk_list_.back(); }
+  virtual const MemoryChunk* first_page() const {
+    return memory_chunk_list_.front();
+  }
+  virtual const MemoryChunk* last_page() const {
+    return memory_chunk_list_.back();
+  }
 
   heap::List<MemoryChunk>& memory_chunk_list() { return memory_chunk_list_; }
+
+  virtual Page* InitializePage(MemoryChunk* chunk) {
+    UNREACHABLE();
+    return nullptr;
+  }
 
   FreeList* free_list() { return free_list_.get(); }
 
@@ -434,23 +441,24 @@ class LocalAllocationBuffer {
 
 class SpaceWithLinearArea : public Space {
  public:
-  SpaceWithLinearArea(Heap* heap, AllocationSpace id, FreeList* free_list)
-      : Space(heap, id, free_list) {
-    allocation_info_.Reset(kNullAddress, kNullAddress);
-  }
+  SpaceWithLinearArea(Heap* heap, AllocationSpace id, FreeList* free_list,
+                      LinearAllocationArea* allocation_info)
+      : Space(heap, id, free_list), allocation_info_(allocation_info) {}
 
   virtual bool SupportsAllocationObserver() = 0;
 
   // Returns the allocation pointer in this space.
-  Address top() { return allocation_info_.top(); }
-  Address limit() { return allocation_info_.limit(); }
+  Address top() const { return allocation_info_->top(); }
+  Address limit() const { return allocation_info_->limit(); }
 
   // The allocation top address.
-  Address* allocation_top_address() { return allocation_info_.top_address(); }
+  Address* allocation_top_address() const {
+    return allocation_info_->top_address();
+  }
 
   // The allocation limit address.
-  Address* allocation_limit_address() {
-    return allocation_info_.limit_address();
+  Address* allocation_limit_address() const {
+    return allocation_info_->limit_address();
   }
 
   // Methods needed for allocation observers.
@@ -484,10 +492,23 @@ class SpaceWithLinearArea : public Space {
 
  protected:
   // TODO(ofrobots): make these private after refactoring is complete.
-  LinearAllocationArea allocation_info_;
+  LinearAllocationArea* const allocation_info_;
 
   size_t allocations_origins_[static_cast<int>(
       AllocationOrigin::kNumberOfAllocationOrigins)] = {0};
+};
+
+// Iterates over all memory chunks in the heap (across all spaces).
+class MemoryChunkIterator {
+ public:
+  explicit MemoryChunkIterator(Heap* heap) : space_iterator_(heap) {}
+
+  V8_INLINE bool HasNext();
+  V8_INLINE MemoryChunk* Next();
+
+ private:
+  SpaceIterator space_iterator_;
+  MemoryChunk* current_chunk_ = nullptr;
 };
 
 }  // namespace internal

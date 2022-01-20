@@ -498,7 +498,7 @@ void CodeGenerator::AssembleArchBinarySearchSwitchRange(
       tasm()->JumpIfEqual(input, begin->first, begin->second);
       ++begin;
     }
-    AssembleArchJump(def_block);
+    AssembleArchJumpRegardlessOfAssemblyOrder(def_block);
     return;
   }
   auto middle = begin + (end - begin) / 2;
@@ -507,6 +507,11 @@ void CodeGenerator::AssembleArchBinarySearchSwitchRange(
   AssembleArchBinarySearchSwitchRange(input, def_block, middle, end);
   tasm()->bind(&less_label);
   AssembleArchBinarySearchSwitchRange(input, def_block, begin, middle);
+}
+
+void CodeGenerator::AssembleArchJump(RpoNumber target) {
+  if (!IsNextInAssemblyOrder(target))
+    AssembleArchJumpRegardlessOfAssemblyOrder(target);
 }
 
 base::OwnedVector<byte> CodeGenerator::GetSourcePositionTable() {
@@ -980,8 +985,9 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
     data->SetSharedFunctionInfo(Smi::zero());
   }
 
-  Handle<FixedArray> literals = isolate()->factory()->NewFixedArray(
-      static_cast<int>(deoptimization_literals_.size()), AllocationType::kOld);
+  Handle<DeoptimizationLiteralArray> literals =
+      isolate()->factory()->NewDeoptimizationLiteralArray(
+          static_cast<int>(deoptimization_literals_.size()));
   for (unsigned i = 0; i < deoptimization_literals_.size(); i++) {
     Handle<Object> object = deoptimization_literals_[i].Reify(isolate());
     CHECK(!object.is_null());

@@ -56,11 +56,12 @@ namespace {
 
 void PrintHeapObjectHeaderWithoutMap(HeapObject object, std::ostream& os,
                                      const char* id) {
+  PtrComprCageBase cage_base = GetPtrComprCageBaseSlow(object);
   os << reinterpret_cast<void*>(object.ptr()) << ": [";
   if (id != nullptr) {
     os << id;
   } else {
-    os << object.map().instance_type();
+    os << object.map(cage_base).instance_type();
   }
   os << "]";
   if (ReadOnlyHeap::Contains(object)) {
@@ -101,11 +102,14 @@ void PrintDictionaryContents(std::ostream& os, T dict) {
 
 void HeapObject::PrintHeader(std::ostream& os, const char* id) {
   PrintHeapObjectHeaderWithoutMap(*this, os, id);
-  if (!IsMap()) os << "\n - map: " << Brief(map());
+  PtrComprCageBase cage_base = GetPtrComprCageBaseSlow(*this);
+  if (!IsMap(cage_base)) os << "\n - map: " << Brief(map(cage_base));
 }
 
 void HeapObject::HeapObjectPrint(std::ostream& os) {
-  InstanceType instance_type = map().instance_type();
+  PtrComprCageBase cage_base = GetPtrComprCageBaseSlow(*this);
+
+  InstanceType instance_type = map(cage_base).instance_type();
 
   if (instance_type < FIRST_NONSTRING_TYPE) {
     String::cast(*this).StringPrint(os);
@@ -133,6 +137,9 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {
       break;
     case HASH_TABLE_TYPE:
       ObjectHashTable::cast(*this).ObjectHashTablePrint(os);
+      break;
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
+      NameToIndexHashTable::cast(*this).NameToIndexHashTablePrint(os);
       break;
     case ORDERED_HASH_MAP_TYPE:
       OrderedHashMap::cast(*this).OrderedHashMapPrint(os);
@@ -264,6 +271,10 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {
     case THIN_ONE_BYTE_STRING_TYPE:
     case UNCACHED_EXTERNAL_STRING_TYPE:
     case UNCACHED_EXTERNAL_ONE_BYTE_STRING_TYPE:
+    case SHARED_STRING_TYPE:
+    case SHARED_ONE_BYTE_STRING_TYPE:
+    case SHARED_THIN_STRING_TYPE:
+    case SHARED_THIN_ONE_BYTE_STRING_TYPE:
     case JS_LAST_DUMMY_API_OBJECT_TYPE:
       // TODO(all): Handle these types too.
       os << "UNKNOWN TYPE " << map().instance_type();
@@ -592,7 +603,7 @@ static void JSObjectPrintBody(std::ostream& os, JSObject obj,
   }
   int embedder_fields = obj.GetEmbedderFieldCount();
   if (embedder_fields > 0) {
-    Isolate* isolate = GetIsolateForHeapSandbox(obj);
+    Isolate* isolate = GetIsolateForSandbox(obj);
     os << " - embedder fields = {";
     for (int i = 0; i < embedder_fields; i++) {
       os << "\n    ";
@@ -780,7 +791,7 @@ void ObjectBoilerplateDescription::ObjectBoilerplateDescriptionPrint(
 }
 
 void EmbedderDataArray::EmbedderDataArrayPrint(std::ostream& os) {
-  Isolate* isolate = GetIsolateForHeapSandbox(*this);
+  Isolate* isolate = GetIsolateForSandbox(*this);
   PrintHeader(os, "EmbedderDataArray");
   os << "\n - length: " << length();
   EmbedderDataSlot start(*this, 0);
@@ -950,6 +961,11 @@ void PrintHashTableHeader(std::ostream& os, T table, const char* type) {
 
 void ObjectHashTable::ObjectHashTablePrint(std::ostream& os) {
   PrintHashTableHeader(os, *this, "ObjectHashTable");
+  PrintHashMapContentsFull(os, *this);
+}
+
+void NameToIndexHashTable::NameToIndexHashTablePrint(std::ostream& os) {
+  PrintHashTableHeader(os, *this, "NameToIndexHashTable");
   PrintHashMapContentsFull(os, *this);
 }
 
@@ -1508,7 +1524,7 @@ void JSFunction::JSFunctionPrint(std::ostream& os) {
      << shared().internal_formal_parameter_count_without_receiver();
   os << "\n - kind: " << shared().kind();
   os << "\n - context: " << Brief(context());
-  os << "\n - code: " << Brief(raw_code());
+  os << "\n - code: " << Brief(code());
   if (code().kind() == CodeKind::FOR_TESTING) {
     os << "\n - FOR_TESTING";
   } else if (ActiveTierIsIgnition()) {
@@ -1789,9 +1805,16 @@ void WasmStruct::WasmStructPrint(std::ostream& os) {
       case wasm::kRef:
       case wasm::kOptRef:
       case wasm::kRtt:
-      case wasm::kRttWithDepth:
-        os << Brief(base::ReadUnalignedValue<Object>(field_address));
+      case wasm::kRttWithDepth: {
+        Tagged_t raw = base::ReadUnalignedValue<Tagged_t>(field_address);
+#if V8_COMPRESS_POINTERS
+        Address obj = DecompressTaggedPointer(address(), raw);
+#else
+        Address obj = raw;
+#endif
+        os << Brief(Object(obj));
         break;
+      }
       case wasm::kS128:
         os << "UNIMPLEMENTED";  // TODO(7748): Implement.
         break;
@@ -1828,17 +1851,24 @@ void WasmArray::WasmArrayPrint(std::ostream& os) {
                               true);
       break;
     case wasm::kI8:
+      PrintTypedArrayElements(os, reinterpret_cast<int8_t*>(data_ptr), len,
+                              true);
+      break;
     case wasm::kI16:
+      PrintTypedArrayElements(os, reinterpret_cast<int16_t*>(data_ptr), len,
+                              true);
+      break;
     case wasm::kS128:
     case wasm::kRef:
     case wasm::kOptRef:
     case wasm::kRtt:
     case wasm::kRttWithDepth:
-    case wasm::kBottom:
-    case wasm::kVoid:
       os << "\n   Printing elements of this type is unimplemented, sorry";
       // TODO(7748): Implement.
       break;
+    case wasm::kBottom:
+    case wasm::kVoid:
+      UNREACHABLE();
   }
   os << "\n";
 }
@@ -1847,8 +1877,13 @@ void WasmContinuationObject::WasmContinuationObjectPrint(std::ostream& os) {
   PrintHeader(os, "WasmContinuationObject");
   os << "\n - parent: " << parent();
   os << "\n - jmpbuf: " << jmpbuf();
-  os << "\n - managed_stack: " << managed_stack();
-  os << "\n - managed_jmpbuf: " << managed_jmpbuf();
+  os << "\n - stack: " << stack();
+  os << "\n";
+}
+
+void WasmSuspenderObject::WasmSuspenderObjectPrint(std::ostream& os) {
+  PrintHeader(os, "WasmSuspenderObject");
+  os << "\n - continuation: " << continuation();
   os << "\n";
 }
 
@@ -1905,8 +1940,7 @@ void WasmInstanceObject::WasmInstanceObjectPrint(std::ostream& os) {
 
 // Never called directly, as WasmFunctionData is an "abstract" class.
 void WasmFunctionData::WasmFunctionDataPrint(std::ostream& os) {
-  os << "\n - target: " << reinterpret_cast<void*>(foreign_address());
-  os << "\n - ref: " << Brief(ref());
+  os << "\n - internal: " << Brief(internal());
   os << "\n - wrapper_code: " << Brief(TorqueGeneratedClass::wrapper_code());
 }
 
@@ -1917,14 +1951,13 @@ void WasmExportedFunctionData::WasmExportedFunctionDataPrint(std::ostream& os) {
   os << "\n - function_index: " << function_index();
   os << "\n - signature: " << Brief(signature());
   os << "\n - wrapper_budget: " << wrapper_budget();
+  os << "\n - suspender: " << suspender();
   os << "\n";
 }
 
 void WasmJSFunctionData::WasmJSFunctionDataPrint(std::ostream& os) {
   PrintHeader(os, "WasmJSFunctionData");
   WasmFunctionDataPrint(os);
-  os << "\n - wasm_to_js_wrapper_code: "
-     << Brief(raw_wasm_to_js_wrapper_code());
   os << "\n - serialized_return_count: " << serialized_return_count();
   os << "\n - serialized_parameter_count: " << serialized_parameter_count();
   os << "\n - serialized_signature: " << Brief(serialized_signature());
@@ -1933,9 +1966,19 @@ void WasmJSFunctionData::WasmJSFunctionDataPrint(std::ostream& os) {
 
 void WasmApiFunctionRef::WasmApiFunctionRefPrint(std::ostream& os) {
   PrintHeader(os, "WasmApiFunctionRef");
-  os << "\n - isolate_root: " << reinterpret_cast<void*>(foreign_address());
+  os << "\n - isolate_root: " << reinterpret_cast<void*>(isolate_root());
   os << "\n - native_context: " << Brief(native_context());
   os << "\n - callable: " << Brief(callable());
+  os << "\n - suspender: " << Brief(suspender());
+  os << "\n";
+}
+
+void WasmInternalFunction::WasmInternalFunctionPrint(std::ostream& os) {
+  PrintHeader(os, "WasmInternalFunction");
+  os << "\n - call target: " << reinterpret_cast<void*>(foreign_address());
+  os << "\n - ref: " << Brief(ref());
+  os << "\n - external: " << Brief(external());
+  os << "\n - code: " << Brief(code());
   os << "\n";
 }
 
@@ -2329,7 +2372,7 @@ void ScopeInfo::ScopeInfoPrint(std::ostream& os) {
     os << "\n - receiver: " << ReceiverVariableBits::decode(flags);
   }
   if (HasClassBrand()) os << "\n - has class brand";
-  if (HasSavedClassVariableIndex()) os << "\n - has saved class variable index";
+  if (HasSavedClassVariable()) os << "\n - has saved class variable";
   if (HasNewTarget()) os << "\n - needs new target";
   if (HasFunctionName()) {
     os << "\n - function name(" << FunctionVariableBits::decode(flags) << "): ";
@@ -2793,7 +2836,7 @@ V8_EXPORT_PRIVATE extern void _v8_internal_Print_Code(void* object) {
 
   if (!isolate->heap()->InSpaceSlow(address, i::CODE_SPACE) &&
       !isolate->heap()->InSpaceSlow(address, i::CODE_LO_SPACE) &&
-      !i::InstructionStream::PcIsOffHeap(isolate, address) &&
+      !i::OffHeapInstructionStream::PcIsOffHeap(isolate, address) &&
       !i::ReadOnlyHeap::Contains(address)) {
     i::PrintF(
         "%p is not within the current isolate's code, read_only or embedded "

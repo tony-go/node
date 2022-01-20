@@ -22,9 +22,6 @@ using v8_crdtp::json::ConvertCBORToJSON;
 using v8_crdtp::json::ConvertJSONToCBOR;
 
 namespace v8_inspector {
-
-int V8StackTraceImpl::maxCallStackSizeToCapture = 200;
-
 namespace {
 
 static const char kId[] = "id";
@@ -42,8 +39,10 @@ std::vector<std::shared_ptr<StackFrame>> toFramesVector(
   DCHECK(debugger->isolate()->InContext());
   int frameCount = std::min(v8StackTrace->GetFrameCount(), maxStackSize);
 
-  TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"),
-               "SymbolizeStackTrace", "frameCount", frameCount);
+  TRACE_EVENT1(
+      TRACE_DISABLED_BY_DEFAULT("v8.inspector") "," TRACE_DISABLED_BY_DEFAULT(
+          "v8.stack_trace"),
+      "toFramesVector", "frameCount", frameCount);
 
   std::vector<std::shared_ptr<StackFrame>> frames(frameCount);
   for (int i = 0; i < frameCount; ++i) {
@@ -168,16 +167,15 @@ std::unique_ptr<StringBuffer> V8StackTraceId::ToString() {
   return StringBufferFrom(std::move(json));
 }
 
-StackFrame::StackFrame(v8::Isolate* isolate, v8::Local<v8::StackFrame> v8Frame)
-    : m_functionName(
-          toProtocolString(isolate, v8::debug::GetFunctionDebugName(v8Frame))),
-      m_scriptId(v8Frame->GetScriptId()),
-      m_sourceURL(
-          toProtocolString(isolate, v8Frame->GetScriptNameOrSourceURL())),
-      m_lineNumber(v8Frame->GetLineNumber() - 1),
-      m_columnNumber(v8Frame->GetColumn() - 1),
-      m_hasSourceURLComment(v8Frame->GetScriptName() !=
-                            v8Frame->GetScriptNameOrSourceURL()) {
+StackFrame::StackFrame(String16&& functionName, int scriptId,
+                       String16&& sourceURL, int lineNumber, int columnNumber,
+                       bool hasSourceURLComment)
+    : m_functionName(std::move(functionName)),
+      m_scriptId(scriptId),
+      m_sourceURL(std::move(sourceURL)),
+      m_lineNumber(lineNumber),
+      m_columnNumber(columnNumber),
+      m_hasSourceURLComment(hasSourceURLComment) {
   DCHECK_NE(v8::Message::kNoLineNumberInfo, m_lineNumber + 1);
   DCHECK_NE(v8::Message::kNoColumnInfo, m_columnNumber + 1);
 }
@@ -223,13 +221,6 @@ bool StackFrame::isEqual(StackFrame* frame) const {
 }
 
 // static
-void V8StackTraceImpl::setCaptureStackTraceForUncaughtExceptions(
-    v8::Isolate* isolate, bool capture) {
-  isolate->SetCaptureStackTraceForUncaughtExceptions(
-      capture, V8StackTraceImpl::maxCallStackSizeToCapture);
-}
-
-// static
 std::unique_ptr<V8StackTraceImpl> V8StackTraceImpl::create(
     V8Debugger* debugger, v8::Local<v8::StackTrace> v8StackTrace,
     int maxStackSize) {
@@ -258,8 +249,10 @@ std::unique_ptr<V8StackTraceImpl> V8StackTraceImpl::capture(
     V8Debugger* debugger, int maxStackSize) {
   DCHECK(debugger);
 
-  TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"),
-               "V8StackTraceImpl::capture", "maxFrameCount", maxStackSize);
+  TRACE_EVENT1(
+      TRACE_DISABLED_BY_DEFAULT("v8.inspector") "," TRACE_DISABLED_BY_DEFAULT(
+          "v8.stack_trace"),
+      "V8StackTraceImpl::capture", "maxFrameCount", maxStackSize);
 
   v8::Isolate* isolate = debugger->isolate();
   v8::HandleScope handleScope(isolate);
@@ -332,11 +325,6 @@ V8StackTraceImpl::buildInspectorObjectImpl(V8Debugger* debugger,
 }
 
 std::unique_ptr<protocol::Runtime::API::StackTrace>
-V8StackTraceImpl::buildInspectorObject() const {
-  return buildInspectorObjectImpl(nullptr);
-}
-
-std::unique_ptr<protocol::Runtime::API::StackTrace>
 V8StackTraceImpl::buildInspectorObject(int maxAsyncDepth) const {
   return buildInspectorObjectImpl(nullptr,
                                   std::min(maxAsyncDepth, m_maxAsyncDepth));
@@ -404,12 +392,14 @@ StackFrame* V8StackTraceImpl::StackFrameIterator::frame() {
 
 // static
 std::shared_ptr<AsyncStackTrace> AsyncStackTrace::capture(
-    V8Debugger* debugger, const String16& description, int maxStackSize,
-    bool skipTopFrame) {
+    V8Debugger* debugger, const String16& description, bool skipTopFrame) {
   DCHECK(debugger);
 
-  TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("v8.stack_trace"),
-               "AsyncStackTrace::capture", "maxFrameCount", maxStackSize);
+  int maxStackSize = debugger->maxCallStackSizeToCapture();
+  TRACE_EVENT1(
+      TRACE_DISABLED_BY_DEFAULT("v8.inspector") "," TRACE_DISABLED_BY_DEFAULT(
+          "v8.stack_trace"),
+      "AsyncStackTrace::capture", "maxFrameCount", maxStackSize);
 
   v8::Isolate* isolate = debugger->isolate();
   v8::HandleScope handleScope(isolate);

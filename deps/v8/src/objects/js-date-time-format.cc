@@ -145,16 +145,14 @@ static std::vector<PatternItem> BuildPatternItems() {
                               kNarrowLongShort2DigitNumeric));
   items.push_back(PatternItem("day", {{"dd", "2-digit"}, {"d", "numeric"}},
                               k2DigitNumeric));
-  if (FLAG_harmony_intl_dateformat_day_period) {
-    items.push_back(PatternItem("dayPeriod",
-                                {{"BBBBB", "narrow"},
-                                 {"bbbbb", "narrow"},
-                                 {"BBBB", "long"},
-                                 {"bbbb", "long"},
-                                 {"B", "short"},
-                                 {"b", "short"}},
-                                kNarrowLongShort));
-  }
+  items.push_back(PatternItem("dayPeriod",
+                              {{"BBBBB", "narrow"},
+                               {"bbbbb", "narrow"},
+                               {"BBBB", "long"},
+                               {"bbbb", "long"},
+                               {"B", "short"},
+                               {"b", "short"}},
+                              kNarrowLongShort));
   items.push_back(PatternItem("hour",
                               {{"HH", "2-digit"},
                                {"H", "numeric"},
@@ -170,7 +168,6 @@ static std::vector<PatternItem> BuildPatternItems() {
   items.push_back(PatternItem("second", {{"ss", "2-digit"}, {"s", "numeric"}},
                               k2DigitNumeric));
 
-  if (FLAG_harmony_intl_more_timezone) {
     const std::vector<const char*> kTimezone = {"long",        "short",
                                                 "longOffset",  "shortOffset",
                                                 "longGeneric", "shortGeneric"};
@@ -182,11 +179,7 @@ static std::vector<PatternItem> BuildPatternItems() {
                                  {"vvvv", "longGeneric"},
                                  {"v", "shortGeneric"}},
                                 kTimezone));
-  } else {
-    items.push_back(PatternItem(
-        "timeZoneName", {{"zzzz", "long"}, {"z", "short"}}, kLongShort));
-  }
-  return items;
+    return items;
 }
 
 class PatternItems {
@@ -421,9 +414,11 @@ class SpecialTimeZoneMap {
   std::map<std::string, std::string> map_;
 };
 
+}  // namespace
+
 // Return the time zone id which match ICU's expectation of title casing
 // return empty string when error.
-std::string CanonicalizeTimeZoneID(const std::string& input) {
+std::string JSDateTimeFormat::CanonicalizeTimeZoneID(const std::string& input) {
   std::string upper = input;
   transform(upper.begin(), upper.end(), upper.begin(),
             LocaleIndependentAsciiToUpper);
@@ -470,6 +465,7 @@ std::string CanonicalizeTimeZoneID(const std::string& input) {
   return ToTitleCaseTimezoneLocation(input);
 }
 
+namespace {
 Handle<String> DateTimeStyleAsString(Isolate* isolate,
                                      JSDateTimeFormat::DateTimeStyle style) {
   switch (style) {
@@ -498,48 +494,9 @@ int FractionalSecondDigitsFromPattern(const std::string& pattern) {
 
 }  // namespace
 
-// ecma402 #sec-intl.datetimeformat.prototype.resolvedoptions
-MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
-    Isolate* isolate, Handle<JSDateTimeFormat> date_time_format) {
+Handle<Object> JSDateTimeFormat::TimeZoneId(Isolate* isolate,
+                                            const icu::TimeZone& tz) {
   Factory* factory = isolate->factory();
-  // 4. Let options be ! ObjectCreate(%ObjectPrototype%).
-  Handle<JSObject> options = factory->NewJSObject(isolate->object_function());
-
-  Handle<Object> resolved_obj;
-
-  Handle<String> locale = Handle<String>(date_time_format->locale(), isolate);
-  DCHECK(!date_time_format->icu_locale().is_null());
-  DCHECK_NOT_NULL(date_time_format->icu_locale().raw());
-  icu::Locale* icu_locale = date_time_format->icu_locale().raw();
-
-  icu::SimpleDateFormat* icu_simple_date_format =
-      date_time_format->icu_simple_date_format().raw();
-  // calendar
-  const icu::Calendar* calendar = icu_simple_date_format->getCalendar();
-  // getType() returns legacy calendar type name instead of LDML/BCP47 calendar
-  // key values. intl.js maps them to BCP47 values for key "ca".
-  // TODO(jshin): Consider doing it here, instead.
-  std::string calendar_str = calendar->getType();
-
-  // Maps ICU calendar names to LDML/BCP47 types for key 'ca'.
-  // See typeMap section in third_party/icu/source/data/misc/keyTypeData.txt
-  // and
-  // http://www.unicode.org/repos/cldr/tags/latest/common/bcp47/calendar.xml
-  if (calendar_str == "gregorian") {
-    if (date_time_format->alt_calendar()) {
-      calendar_str = "iso8601";
-    } else {
-      calendar_str = "gregory";
-    }
-  } else if (calendar_str == "ethiopic-amete-alem") {
-    calendar_str = "ethioaa";
-  } else if (calendar_str == "islamic") {
-    if (date_time_format->alt_calendar()) {
-      calendar_str = "islamic-rgsa";
-    }
-  }
-
-  const icu::TimeZone& tz = calendar->getTimeZone();
   icu::UnicodeString time_zone;
   tz.getID(time_zone);
   UErrorCode status = U_ZERO_ERROR;
@@ -557,14 +514,84 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
         canonical_time_zone == UNICODE_STRING_SIMPLE("Etc/GMT")) {
       timezone_value = factory->UTC_string();
     } else {
-      ASSIGN_RETURN_ON_EXCEPTION(isolate, timezone_value,
-                                 Intl::ToString(isolate, canonical_time_zone),
-                                 JSObject);
+      ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+          isolate, timezone_value, Intl::ToString(isolate, canonical_time_zone),
+          Handle<Object>());
     }
   } else {
     // Somehow on Windows we will reach here.
     timezone_value = factory->undefined_value();
   }
+  return timezone_value;
+}
+
+namespace {
+Handle<String> GetCalendar(Isolate* isolate,
+                           const icu::SimpleDateFormat& simple_date_format,
+                           bool is_alt_calendar = false) {
+  // getType() returns legacy calendar type name instead of LDML/BCP47 calendar
+  // key values. intl.js maps them to BCP47 values for key "ca".
+  // TODO(jshin): Consider doing it here, instead.
+  std::string calendar_str = simple_date_format.getCalendar()->getType();
+
+  // Maps ICU calendar names to LDML/BCP47 types for key 'ca'.
+  // See typeMap section in third_party/icu/source/data/misc/keyTypeData.txt
+  // and
+  // http://www.unicode.org/repos/cldr/tags/latest/common/bcp47/calendar.xml
+  if (calendar_str == "gregorian") {
+    if (is_alt_calendar) {
+      calendar_str = "iso8601";
+    } else {
+      calendar_str = "gregory";
+    }
+  } else if (calendar_str == "ethiopic-amete-alem") {
+    calendar_str = "ethioaa";
+  } else if (calendar_str == "islamic") {
+    if (is_alt_calendar) {
+      calendar_str = "islamic-rgsa";
+    }
+  }
+  return isolate->factory()->NewStringFromAsciiChecked(calendar_str.c_str());
+}
+
+Handle<Object> GetTimeZone(Isolate* isolate,
+                           const icu::SimpleDateFormat& simple_date_format) {
+  return JSDateTimeFormat::TimeZoneId(
+      isolate, simple_date_format.getCalendar()->getTimeZone());
+}
+}  // namespace
+
+Handle<String> JSDateTimeFormat::Calendar(
+    Isolate* isolate, Handle<JSDateTimeFormat> date_time_format) {
+  return GetCalendar(isolate,
+                     *(date_time_format->icu_simple_date_format().raw()),
+                     date_time_format->alt_calendar());
+}
+
+Handle<Object> JSDateTimeFormat::TimeZone(
+    Isolate* isolate, Handle<JSDateTimeFormat> date_time_format) {
+  return GetTimeZone(isolate,
+                     *(date_time_format->icu_simple_date_format().raw()));
+}
+
+// ecma402 #sec-intl.datetimeformat.prototype.resolvedoptions
+MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
+    Isolate* isolate, Handle<JSDateTimeFormat> date_time_format) {
+  Factory* factory = isolate->factory();
+  // 4. Let options be ! ObjectCreate(%ObjectPrototype%).
+  Handle<JSObject> options = factory->NewJSObject(isolate->object_function());
+
+  Handle<Object> resolved_obj;
+
+  Handle<String> locale = Handle<String>(date_time_format->locale(), isolate);
+  DCHECK(!date_time_format->icu_locale().is_null());
+  DCHECK_NOT_NULL(date_time_format->icu_locale().raw());
+  icu::Locale* icu_locale = date_time_format->icu_locale().raw();
+
+  icu::SimpleDateFormat* icu_simple_date_format =
+      date_time_format->icu_simple_date_format().raw();
+  Handle<Object> timezone =
+      JSDateTimeFormat::TimeZone(isolate, date_time_format);
 
   // Ugly hack. ICU doesn't expose numbering system in any way, so we have
   // to assume that for given locale NumberingSystem constructor produces the
@@ -601,10 +628,10 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
   DCHECK(maybe_create_locale.FromJust());
   USE(maybe_create_locale);
 
+  Handle<String> calendar =
+      JSDateTimeFormat::Calendar(isolate, date_time_format);
   Maybe<bool> maybe_create_calendar = JSReceiver::CreateDataProperty(
-      isolate, options, factory->calendar_string(),
-      factory->NewStringFromAsciiChecked(calendar_str.c_str()),
-      Just(kDontThrow));
+      isolate, options, factory->calendar_string(), calendar, Just(kDontThrow));
   DCHECK(maybe_create_calendar.FromJust());
   USE(maybe_create_calendar);
 
@@ -617,8 +644,7 @@ MaybeHandle<JSObject> JSDateTimeFormat::ResolvedOptions(
     USE(maybe_create_numbering_system);
   }
   Maybe<bool> maybe_create_time_zone = JSReceiver::CreateDataProperty(
-      isolate, options, factory->timeZone_string(), timezone_value,
-      Just(kDontThrow));
+      isolate, options, factory->timeZone_string(), timezone, Just(kDontThrow));
   DCHECK(maybe_create_time_zone.FromJust());
   USE(maybe_create_time_zone);
 
@@ -929,9 +955,7 @@ MaybeHandle<JSObject> JSDateTimeFormat::ToDateTimeOptions(
     // a. For each of the property names "dayPeriod", "hour", "minute",
     // "second", "fractionalSecondDigits", do
     std::vector<Handle<String>> list;
-    if (FLAG_harmony_intl_dateformat_day_period) {
-      list.push_back(factory->dayPeriod_string());
-    }
+    list.push_back(factory->dayPeriod_string());
     list.push_back(factory->hour_string());
     list.push_back(factory->minute_string());
     list.push_back(factory->second_string());
@@ -1024,20 +1048,8 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::UnwrapDateTimeFormat(
   return Handle<JSDateTimeFormat>::cast(dtf);
 }
 
-namespace {
-
-// ecma-402/#sec-isvalidtimezonename
-bool IsValidTimeZoneName(const icu::TimeZone& tz) {
-  UErrorCode status = U_ZERO_ERROR;
-  icu::UnicodeString id;
-  tz.getID(id);
-  icu::UnicodeString canonical;
-  icu::TimeZone::getCanonicalID(id, canonical, status);
-  return U_SUCCESS(status) &&
-         canonical != icu::UnicodeString("Etc/Unknown", -1, US_INV);
-}
-
-std::unique_ptr<icu::TimeZone> CreateTimeZone(const char* timezone) {
+std::unique_ptr<icu::TimeZone> JSDateTimeFormat::CreateTimeZone(
+    const char* timezone) {
   // Create time zone as specified by the user. We have to re-create time zone
   // since calendar takes ownership.
   if (timezone == nullptr) {
@@ -1050,9 +1062,11 @@ std::unique_ptr<icu::TimeZone> CreateTimeZone(const char* timezone) {
       icu::TimeZone::createTimeZone(canonicalized.c_str()));
   // 18.b If the result of IsValidTimeZoneName(timeZone) is false, then
   // i. Throw a RangeError exception.
-  if (!IsValidTimeZoneName(*tz)) return std::unique_ptr<icu::TimeZone>();
+  if (!Intl::IsValidTimeZoneName(*tz)) return std::unique_ptr<icu::TimeZone>();
   return tz;
 }
+
+namespace {
 
 class CalendarCache {
  public:
@@ -1081,7 +1095,7 @@ class CalendarCache {
         icu::GregorianCalendar::getStaticClassID()) {
       icu::GregorianCalendar* gc =
           static_cast<icu::GregorianCalendar*>(calendar.get());
-      UErrorCode status = U_ZERO_ERROR;
+      status = U_ZERO_ERROR;
       // The beginning of ECMAScript time, namely -(2**53)
       const double start_of_time = -9007199254740992;
       gc->setGregorianChange(start_of_time, status);
@@ -1663,7 +1677,8 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::New(
       isolate, options, "timeZone", empty_values, service, &timezone);
   MAYBE_RETURN(maybe_timezone, Handle<JSDateTimeFormat>());
 
-  std::unique_ptr<icu::TimeZone> tz = CreateTimeZone(timezone.get());
+  std::unique_ptr<icu::TimeZone> tz =
+      JSDateTimeFormat::CreateTimeZone(timezone.get());
   if (tz.get() == nullptr) {
     THROW_NEW_ERROR(
         isolate,
@@ -1726,7 +1741,6 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::New(
 
   // 29. Let matcher be ? GetOption(options, "formatMatcher", "string", «
   // "basic", "best fit" », "best fit").
-  enum FormatMatcherOption { kBestFit, kBasic };
   // We implement only best fit algorithm, but still need to check
   // if the formatMatcher values are in range.
   // c. Let matcher be ? GetOption(options, "formatMatcher", "string",
@@ -1870,7 +1884,7 @@ MaybeHandle<JSDateTimeFormat> JSDateTimeFormat::New(
       if (dateTimeFormatHourCycle !=
           ToHourCycle(hc_extension_it->second.c_str())) {
         // Remove -hc- if it does not agree with what we used.
-        UErrorCode status = U_ZERO_ERROR;
+        status = U_ZERO_ERROR;
         resolved_locale.setUnicodeKeywordValue("hc", nullptr, status);
         DCHECK(U_SUCCESS(status));
       }

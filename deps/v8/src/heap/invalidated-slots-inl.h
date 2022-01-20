@@ -5,13 +5,9 @@
 #ifndef V8_HEAP_INVALIDATED_SLOTS_INL_H_
 #define V8_HEAP_INVALIDATED_SLOTS_INL_H_
 
-#include <map>
-
 #include "src/heap/invalidated-slots.h"
 #include "src/heap/spaces.h"
-#include "src/objects/objects-body-descriptors-inl.h"
-#include "src/objects/objects-body-descriptors.h"
-#include "src/objects/objects.h"
+#include "src/objects/objects-inl.h"
 #include "src/utils/allocation.h"
 
 namespace v8 {

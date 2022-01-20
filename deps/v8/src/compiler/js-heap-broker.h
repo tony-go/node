@@ -94,12 +94,12 @@ DEFINE_OPERATORS_FOR_FLAGS(GetOrCreateDataFlags)
 class V8_EXPORT_PRIVATE JSHeapBroker {
  public:
   JSHeapBroker(Isolate* isolate, Zone* broker_zone, bool tracing_enabled,
-               bool is_concurrent_inlining, CodeKind code_kind);
+               CodeKind code_kind);
 
   // For use only in tests, sets default values for some arguments. Avoids
   // churn when new flags are added.
   JSHeapBroker(Isolate* isolate, Zone* broker_zone)
-      : JSHeapBroker(isolate, broker_zone, FLAG_trace_heap_broker, false,
+      : JSHeapBroker(isolate, broker_zone, FLAG_trace_heap_broker,
                      CodeKind::TURBOFAN) {}
 
   ~JSHeapBroker();
@@ -114,9 +114,19 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
   void InitializeAndStartSerializing();
 
   Isolate* isolate() const { return isolate_; }
+
+  // The pointer compression cage base value used for decompression of all
+  // tagged values except references to Code objects.
+  PtrComprCageBase cage_base() const {
+#if V8_COMPRESS_POINTERS
+    return cage_base_;
+#else
+    return PtrComprCageBase{};
+#endif  // V8_COMPRESS_POINTERS
+  }
+
   Zone* zone() const { return zone_; }
   bool tracing_enabled() const { return tracing_enabled_; }
-  bool is_concurrent_inlining() const { return is_concurrent_inlining_; }
   bool is_turboprop() const { return code_kind_ == CodeKind::TURBOPROP; }
 
   NexusConfig feedback_nexus_config() const {
@@ -413,6 +423,9 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
       std::unique_ptr<CanonicalHandlesMap> canonical_handles);
 
   Isolate* const isolate_;
+#if V8_COMPRESS_POINTERS
+  const PtrComprCageBase cage_base_;
+#endif  // V8_COMPRESS_POINTERS
   Zone* const zone_;
   base::Optional<NativeContextRef> target_native_context_;
   RefsMap* refs_;
@@ -422,7 +435,6 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
       array_and_object_prototypes_;
   BrokerMode mode_ = kDisabled;
   bool const tracing_enabled_;
-  bool const is_concurrent_inlining_;
   CodeKind const code_kind_;
   std::unique_ptr<PersistentHandles> ph_;
   LocalIsolate* local_isolate_ = nullptr;

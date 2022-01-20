@@ -39,6 +39,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "src/base/macros.h"
 #include "src/base/memory.h"
 #include "src/codegen/code-comments.h"
 #include "src/codegen/cpu-features.h"
@@ -64,7 +65,7 @@ using base::WriteUnalignedValue;
 
 // Forward declarations.
 class EmbeddedData;
-class InstructionStream;
+class OffHeapInstructionStream;
 class Isolate;
 class SCTableReference;
 class SourcePosition;
@@ -352,8 +353,8 @@ class V8_EXPORT_PRIVATE AssemblerBase : public Malloced {
  protected:
   // Add 'target' to the {code_targets_} vector, if necessary, and return the
   // offset at which it is stored.
-  int AddCodeTarget(Handle<Code> target);
-  Handle<Code> GetCodeTarget(intptr_t code_target_index) const;
+  int AddCodeTarget(Handle<CodeT> target);
+  Handle<CodeT> GetCodeTarget(intptr_t code_target_index) const;
 
   // Add 'object' to the {embedded_objects_} vector and return the index at
   // which it is stored.
@@ -387,7 +388,7 @@ class V8_EXPORT_PRIVATE AssemblerBase : public Malloced {
   void RequestHeapObject(HeapObjectRequest request);
 
   bool ShouldRecordRelocInfo(RelocInfo::Mode rmode) const {
-    DCHECK(!RelocInfo::IsNone(rmode));
+    DCHECK(!RelocInfo::IsNoInfo(rmode));
     if (options().disable_reloc_info_for_patching) return false;
     if (RelocInfo::IsOnlyForSerializer(rmode) &&
         !options().record_reloc_info_for_serialization && !FLAG_debug_code) {
@@ -408,7 +409,7 @@ class V8_EXPORT_PRIVATE AssemblerBase : public Malloced {
   // guaranteed to fit in the instruction's offset field. We keep track of the
   // code handles we encounter in calls in this vector, and encode the index of
   // the code handle in the vector instead.
-  std::vector<Handle<Code>> code_targets_;
+  std::vector<Handle<CodeT>> code_targets_;
 
   // If an assembler needs a small number to refer to a heap object handle
   // (for example, because there are only 32bit available on a 64bit arch), the
@@ -470,7 +471,7 @@ class V8_EXPORT_PRIVATE V8_NODISCARD CpuFeatureScope {
 #ifdef V8_CODE_COMMENTS
 #define ASM_CODE_COMMENT(asm) ASM_CODE_COMMENT_STRING(asm, __func__)
 #define ASM_CODE_COMMENT_STRING(asm, comment) \
-  AssemblerBase::CodeComment asm_code_comment(asm, comment)
+  AssemblerBase::CodeComment UNIQUE_IDENTIFIER(asm_code_comment)(asm, comment)
 #else
 #define ASM_CODE_COMMENT(asm)
 #define ASM_CODE_COMMENT_STRING(asm, ...)

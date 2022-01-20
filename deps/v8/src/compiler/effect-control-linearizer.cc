@@ -342,6 +342,7 @@ class EffectControlLinearizer {
   Zone* temp_zone_;
   MaintainSchedule maintain_schedule_;
   RegionObservability region_observability_ = RegionObservability::kObservable;
+  bool inside_region_ = false;
   SourcePositionTable* source_positions_;
   NodeOriginTable* node_origins_;
   JSHeapBroker* broker_;
@@ -864,6 +865,7 @@ void EffectControlLinearizer::ProcessNode(Node* node, Node** frame_state) {
   if (node->opcode() == IrOpcode::kFinishRegion) {
     // Reset the current region observability.
     region_observability_ = RegionObservability::kObservable;
+    inside_region_ = false;
     // Update the value uses to the value input of the finish node and
     // the effect uses to the effect input.
     return RemoveRenameNode(node);
@@ -874,6 +876,7 @@ void EffectControlLinearizer::ProcessNode(Node* node, Node** frame_state) {
     // StoreField and other operators).
     DCHECK_NE(RegionObservability::kNotObservable, region_observability_);
     region_observability_ = RegionObservabilityOf(node->op());
+    inside_region_ = true;
     // Update the value uses to the value input of the finish node and
     // the effect uses to the effect input.
     return RemoveRenameNode(node);
@@ -889,6 +892,14 @@ void EffectControlLinearizer::ProcessNode(Node* node, Node** frame_state) {
     DCHECK_EQ(RegionObservability::kObservable, region_observability_);
     *frame_state = NodeProperties::GetFrameStateInput(node);
     return;
+  }
+
+  if (node->opcode() == IrOpcode::kStoreField) {
+    // Mark stores outside a region as non-initializing and non-transitioning.
+    if (!inside_region_) {
+      const FieldAccess access = FieldAccessOf(node->op());
+      NodeProperties::ChangeOp(node, simplified()->StoreField(access, false));
+    }
   }
 
   // The IfSuccess nodes should always start a basic block (and basic block
@@ -3683,10 +3694,8 @@ Node* EffectControlLinearizer::LowerArgumentsLength(Node* node) {
   Node* arguments_length = ChangeIntPtrToSmi(
       __ Load(MachineType::Pointer(), __ LoadFramePointer(),
               __ IntPtrConstant(StandardFrameConstants::kArgCOffset)));
-  if (kJSArgcIncludesReceiver) {
-    arguments_length =
-        __ SmiSub(arguments_length, __ SmiConstant(kJSArgcReceiverSlots));
-  }
+  arguments_length =
+      __ SmiSub(arguments_length, __ SmiConstant(kJSArgcReceiverSlots));
   return arguments_length;
 }
 
@@ -3700,10 +3709,8 @@ Node* EffectControlLinearizer::LowerRestLength(Node* node) {
   Node* arguments_length = ChangeIntPtrToSmi(
       __ Load(MachineType::Pointer(), frame,
               __ IntPtrConstant(StandardFrameConstants::kArgCOffset)));
-  if (kJSArgcIncludesReceiver) {
-    arguments_length =
-        __ SmiSub(arguments_length, __ SmiConstant(kJSArgcReceiverSlots));
-  }
+  arguments_length =
+      __ SmiSub(arguments_length, __ SmiConstant(kJSArgcReceiverSlots));
   Node* rest_length =
       __ SmiSub(arguments_length, __ SmiConstant(formal_parameter_count));
   __ GotoIf(__ SmiLessThan(rest_length, __ SmiConstant(0)), &done,
@@ -4985,6 +4992,10 @@ MachineType MachineTypeFor(CTypeInfo::Type type) {
       return MachineType::Uint32();
     case CTypeInfo::Type::kInt64:
       return MachineType::Int64();
+    case CTypeInfo::Type::kAny:
+      static_assert(sizeof(AnyCType) == 8,
+                    "CTypeInfo::Type::kAny is assumed to be of size 64 bits.");
+      return MachineType::Int64();
     case CTypeInfo::Type::kUint64:
       return MachineType::Uint64();
     case CTypeInfo::Type::kFloat32:
@@ -5329,7 +5340,7 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
         StoreRepresentation(MachineRepresentation::kWord32, kNoWriteBarrier),
         stack_slot,
         static_cast<int>(offsetof(v8::FastApiCallbackOptions, fallback)),
-        __ ZeroConstant());
+        __ Int32Constant(0));
     __ Store(StoreRepresentation(MachineType::PointerRepresentation(),
                                  kNoWriteBarrier),
              stack_slot,
@@ -5466,6 +5477,11 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
     case CTypeInfo::Type::kV8Value:
     case CTypeInfo::Type::kApiObject:
       UNREACHABLE();
+    case CTypeInfo::Type::kAny:
+      fast_call_result =
+          ChangeFloat64ToTagged(__ ChangeInt64ToFloat64(c_call_result),
+                                CheckForMinusZeroMode::kCheckForMinusZero);
+      break;
   }
 
   auto merge = __ MakeLabel(MachineRepresentation::kTagged);

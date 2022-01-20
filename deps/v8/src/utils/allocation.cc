@@ -14,10 +14,12 @@
 #include "src/base/platform/platform.h"
 #include "src/base/platform/wrappers.h"
 #include "src/base/sanitizer/lsan-page-allocator.h"
+#include "src/base/sanitizer/lsan-virtual-address-space.h"
 #include "src/base/vector.h"
+#include "src/base/virtual-address-space.h"
 #include "src/flags/flags.h"
 #include "src/init/v8.h"
-#include "src/security/vm-cage.h"
+#include "src/sandbox/sandbox.h"
 #include "src/utils/memcopy.h"
 
 #if V8_LIBC_BIONIC
@@ -84,15 +86,25 @@ v8::PageAllocator* GetPlatformPageAllocator() {
   return GetPageAllocatorInitializer()->page_allocator();
 }
 
-#ifdef V8_VIRTUAL_MEMORY_CAGE
-v8::PageAllocator* GetVirtualMemoryCagePageAllocator() {
+v8::VirtualAddressSpace* GetPlatformVirtualAddressSpace() {
+#if defined(LEAK_SANITIZER)
+  static base::LeakyObject<base::LsanVirtualAddressSpace> vas(
+      std::make_unique<base::VirtualAddressSpace>());
+#else
+  static base::LeakyObject<base::VirtualAddressSpace> vas;
+#endif
+  return vas.get();
+}
+
+#ifdef V8_SANDBOX
+v8::PageAllocator* GetSandboxPageAllocator() {
   // TODO(chromium:1218005) remove this code once the cage is no longer
   // optional.
-  if (GetProcessWideVirtualMemoryCage()->is_disabled()) {
+  if (GetProcessWideSandbox()->is_disabled()) {
     return GetPlatformPageAllocator();
   } else {
-    CHECK(GetProcessWideVirtualMemoryCage()->is_initialized());
-    return GetProcessWideVirtualMemoryCage()->page_allocator();
+    CHECK(GetProcessWideSandbox()->is_initialized());
+    return GetProcessWideSandbox()->page_allocator();
   }
 }
 #endif
@@ -189,7 +201,7 @@ void* AllocatePages(v8::PageAllocator* page_allocator, void* hint, size_t size,
   DCHECK_EQ(hint, AlignedAddress(hint, alignment));
   DCHECK(IsAligned(size, page_allocator->AllocatePageSize()));
   if (FLAG_randomize_all_allocations) {
-    hint = page_allocator->GetRandomMmapAddr();
+    hint = AlignedAddress(page_allocator->GetRandomMmapAddr(), alignment);
   }
   void* result = nullptr;
   for (int i = 0; i < kAllocationTries; ++i) {
@@ -424,10 +436,11 @@ bool VirtualMemoryCage::InitReservation(
 
         // The reservation could still be somewhere else but we can accept it
         // if it has the required alignment.
-        Address address = VirtualMemoryCageStart(reservation.address(), params);
-        if (reservation.address() == address) {
+        Address start_address =
+            VirtualMemoryCageStart(reservation.address(), params);
+        if (reservation.address() == start_address) {
           reservation_ = std::move(reservation);
-          base_ = address + params.base_bias_size;
+          base_ = start_address + params.base_bias_size;
           CHECK_EQ(reservation_.size(), params.reservation_size);
           break;
         }

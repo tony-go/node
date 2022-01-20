@@ -42,8 +42,8 @@
 #include "src/objects/tagged-impl-inl.h"
 #include "src/objects/tagged-index.h"
 #include "src/objects/templates.h"
-#include "src/security/caged-pointer-inl.h"
-#include "src/security/external-pointer-inl.h"
+#include "src/sandbox/external-pointer-inl.h"
+#include "src/sandbox/sandboxed-pointer-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -143,6 +143,20 @@ bool Object::IsPrivateSymbol() const {
 
 bool Object::IsNoSharedNameSentinel() const {
   return *this == SharedFunctionInfo::kNoSharedNameSentinel;
+}
+
+template <class T,
+          typename std::enable_if<(std::is_arithmetic<T>::value ||
+                                   std::is_enum<T>::value) &&
+                                      !std::is_floating_point<T>::value,
+                                  int>::type>
+T Object::Relaxed_ReadField(size_t offset) const {
+  // Pointer compression causes types larger than kTaggedSize to be
+  // unaligned. Atomic loads must be aligned.
+  DCHECK_IMPLIES(COMPRESS_POINTERS_BOOL, sizeof(T) <= kTaggedSize);
+  using AtomicT = typename base::AtomicTypeFromByteWidth<sizeof(T)>::type;
+  return static_cast<T>(base::AsAtomicImpl<AtomicT>::Relaxed_Load(
+      reinterpret_cast<AtomicT*>(field_address(offset))));
 }
 
 bool HeapObject::InSharedHeap() const {
@@ -299,35 +313,30 @@ DEF_GETTER(HeapObject, IsDeoptimizationData, bool) {
 }
 
 DEF_GETTER(HeapObject, IsHandlerTable, bool) {
-  if (!IsFixedArrayExact(cage_base)) return false;
-  // There's actually no way to see the difference between a fixed array and
-  // a handler table array.
-  return true;
+  return IsFixedArrayExact(cage_base);
 }
 
 DEF_GETTER(HeapObject, IsTemplateList, bool) {
   if (!IsFixedArrayExact(cage_base)) return false;
-  // There's actually no way to see the difference between a fixed array and
-  // a template list.
   if (FixedArray::cast(*this).length() < 1) return false;
   return true;
 }
 
 DEF_GETTER(HeapObject, IsDependentCode, bool) {
-  if (!IsWeakFixedArray(cage_base)) return false;
-  // There's actually no way to see the difference between a weak fixed array
-  // and a dependent codes array.
-  return true;
+  return IsWeakArrayList(cage_base);
 }
 
 DEF_GETTER(HeapObject, IsOSROptimizedCodeCache, bool) {
-  if (!IsWeakFixedArray(cage_base)) return false;
-  // There's actually no way to see the difference between a weak fixed array
-  // and a osr optimized code cache.
-  return true;
+  return IsWeakFixedArray(cage_base);
 }
 
-DEF_GETTER(HeapObject, IsAbstractCode, bool) {
+bool HeapObject::IsAbstractCode() const {
+  // TODO(v8:11880): Either make AbstractCode be ByteArray|CodeT or
+  // ensure this version is not called for hot code.
+  PtrComprCageBase cage_base = GetPtrComprCageBaseSlow(*this);
+  return HeapObject::IsAbstractCode(cage_base);
+}
+bool HeapObject::IsAbstractCode(PtrComprCageBase cage_base) const {
   return IsBytecodeArray(cage_base) || IsCode(cage_base);
 }
 
@@ -635,23 +644,22 @@ MaybeHandle<Object> Object::SetElement(Isolate* isolate, Handle<Object> object,
   return value;
 }
 
-#ifdef V8_CAGED_POINTERS
-Address Object::ReadCagedPointerField(size_t offset,
-                                      PtrComprCageBase cage_base) const {
-  return i::ReadCagedPointerField(field_address(offset), cage_base);
+Address Object::ReadSandboxedPointerField(size_t offset,
+                                          PtrComprCageBase cage_base) const {
+  return i::ReadSandboxedPointerField(field_address(offset), cage_base);
 }
 
-void Object::WriteCagedPointerField(size_t offset, PtrComprCageBase cage_base,
-                                    Address value) {
-  i::WriteCagedPointerField(field_address(offset), cage_base, value);
+void Object::WriteSandboxedPointerField(size_t offset,
+                                        PtrComprCageBase cage_base,
+                                        Address value) {
+  i::WriteSandboxedPointerField(field_address(offset), cage_base, value);
 }
 
-void Object::WriteCagedPointerField(size_t offset, Isolate* isolate,
-                                    Address value) {
-  i::WriteCagedPointerField(field_address(offset), PtrComprCageBase(isolate),
-                            value);
+void Object::WriteSandboxedPointerField(size_t offset, Isolate* isolate,
+                                        Address value) {
+  i::WriteSandboxedPointerField(field_address(offset),
+                                PtrComprCageBase(isolate), value);
 }
-#endif  // V8_CAGED_POINTERS
 
 void Object::InitExternalPointerField(size_t offset, Isolate* isolate) {
   i::InitExternalPointerField(field_address(offset), isolate);
@@ -763,19 +771,10 @@ ReadOnlyRoots HeapObject::GetReadOnlyRoots(PtrComprCageBase cage_base) const {
 }
 
 Map HeapObject::map() const {
-  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
-    // TODO(v8:11880): Ensure that cage friendly version is used for the cases
-    // when this could be a Code object. Replace this with
-    // DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeObject(*this));
-    Isolate* isolate;
-    if (GetIsolateFromHeapObject(*this, &isolate)) {
-      PtrComprCageBase cage_base(isolate);
-      return HeapObject::map(cage_base);
-    }
-    // If the Isolate can't be obtained then the heap object is a read-only
-    // one and therefore not a Code object, so fallback to auto-computing cage
-    // base value.
-  }
+  // This method is never used for objects located in code space (Code and
+  // free space fillers) and thus it is fine to use auto-computed cage base
+  // value.
+  DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(*this));
   PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
   return HeapObject::map(cage_base);
 }
@@ -784,6 +783,11 @@ Map HeapObject::map(PtrComprCageBase cage_base) const {
 }
 
 void HeapObject::set_map(Map value) {
+#if V8_ENABLE_WEBASSEMBLY
+  // In {WasmGraphBuilder::SetMap} and {WasmGraphBuilder::LoadMap}, we treat
+  // maps as immutable. Therefore we are not allowed to mutate them here.
+  DCHECK(!value.IsWasmStructMap() && !value.IsWasmArrayMap());
+#endif
 #ifdef VERIFY_HEAP
   if (FLAG_verify_heap && !value.is_null()) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
@@ -827,6 +831,7 @@ void HeapObject::set_map_no_write_barrier(Map value, RelaxedStoreTag tag) {
   }
 #endif
   set_map_word(MapWord::FromMap(value), tag);
+  SLOW_DCHECK(!WriteBarrier::IsRequired(*this, value));
 }
 
 void HeapObject::set_map_no_write_barrier(Map value, ReleaseStoreTag tag) {
@@ -836,6 +841,7 @@ void HeapObject::set_map_no_write_barrier(Map value, ReleaseStoreTag tag) {
   }
 #endif
   set_map_word(MapWord::FromMap(value), tag);
+  SLOW_DCHECK(!WriteBarrier::IsRequired(*this, value));
 }
 
 void HeapObject::set_map_after_allocation(Map value, WriteBarrierMode mode) {
@@ -847,6 +853,8 @@ void HeapObject::set_map_after_allocation(Map value, WriteBarrierMode mode) {
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
     // be on an evacuation candidate.
     WriteBarrier::Marking(*this, ObjectSlot(kNullAddress), value);
+  } else {
+    SLOW_DCHECK(!WriteBarrier::IsRequired(*this, value));
   }
 #endif
 }
@@ -856,19 +864,10 @@ ObjectSlot HeapObject::map_slot() const {
 }
 
 MapWord HeapObject::map_word(RelaxedLoadTag tag) const {
-  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
-    // TODO(v8:11880): Ensure that cage friendly version is used for the cases
-    // when this could be a Code object. Replace this with
-    // DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeObject(*this));
-    Isolate* isolate;
-    if (GetIsolateFromHeapObject(*this, &isolate)) {
-      PtrComprCageBase cage_base(isolate);
-      return HeapObject::map_word(cage_base, tag);
-    }
-    // If the Isolate can't be obtained then the heap object is a read-only
-    // one and therefore not a Code object, so fallback to auto-computing cage
-    // base value.
-  }
+  // This method is never used for objects located in code space (Code and
+  // free space fillers) and thus it is fine to use auto-computed cage base
+  // value.
+  DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(*this));
   PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
   return HeapObject::map_word(cage_base, tag);
 }
@@ -882,9 +881,10 @@ void HeapObject::set_map_word(MapWord map_word, RelaxedStoreTag) {
 }
 
 MapWord HeapObject::map_word(AcquireLoadTag tag) const {
-  // This method is never used for Code objects and thus it is fine to use
-  // auto-computed cage base value.
-  DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeObject(*this));
+  // This method is never used for objects located in code space (Code and
+  // free space fillers) and thus it is fine to use auto-computed cage base
+  // value.
+  DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(*this));
   PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
   return HeapObject::map_word(cage_base, tag);
 }
@@ -904,7 +904,15 @@ bool HeapObject::release_compare_and_swap_map_word(MapWord old_map_word,
   return result == static_cast<Tagged_t>(old_map_word.ptr());
 }
 
-int HeapObject::Size() const { return SizeFromMap(map()); }
+// TODO(v8:11880): consider dropping parameterless version.
+int HeapObject::Size() const {
+  DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(*this));
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  return HeapObject::Size(cage_base);
+}
+int HeapObject::Size(PtrComprCageBase cage_base) const {
+  return SizeFromMap(map(cage_base));
+}
 
 inline bool IsSpecialReceiverInstanceType(InstanceType instance_type) {
   return instance_type <= LAST_SPECIAL_RECEIVER_TYPE;
@@ -967,21 +975,16 @@ WriteBarrierMode HeapObject::GetWriteBarrierMode(
 
 // static
 AllocationAlignment HeapObject::RequiredAlignment(Map map) {
-  // TODO(bmeurer, v8:4153): We should think about requiring double alignment
+  // TODO(v8:4153): We should think about requiring double alignment
   // in general for ByteArray, since they are used as backing store for typed
   // arrays now.
-#ifdef V8_COMPRESS_POINTERS
-  // TODO(ishell, v8:8875): Consider using aligned allocations once the
-  // allocation alignment inconsistency is fixed. For now we keep using
-  // unaligned access since both x64 and arm64 architectures (where pointer
-  // compression is supported) allow unaligned access to doubles and full words.
-#endif  // V8_COMPRESS_POINTERS
-#ifdef V8_HOST_ARCH_32_BIT
-  int instance_type = map.instance_type();
-  if (instance_type == FIXED_DOUBLE_ARRAY_TYPE) return kDoubleAligned;
-  if (instance_type == HEAP_NUMBER_TYPE) return kDoubleUnaligned;
-#endif  // V8_HOST_ARCH_32_BIT
-  return kWordAligned;
+  // TODO(ishell, v8:8875): Consider using aligned allocations for BigInt.
+  if (USE_ALLOCATION_ALIGNMENT_BOOL) {
+    int instance_type = map.instance_type();
+    if (instance_type == FIXED_DOUBLE_ARRAY_TYPE) return kDoubleAligned;
+    if (instance_type == HEAP_NUMBER_TYPE) return kDoubleUnaligned;
+  }
+  return kTaggedAligned;
 }
 
 Address HeapObject::GetFieldAddress(int field_offset) const {

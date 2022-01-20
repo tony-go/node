@@ -527,10 +527,11 @@ TEST(Previleged) {
   VERIFY_RUN();
 }
 */
-#ifdef CAN_USE_RVV_INSTRUCTIONS
+
 TEST(RVV) {
+  if (!CpuFeatures::IsSupported(RISCV_SIMD)) return;
   SET_UP();
-  COMPARE(vsetvlmax(kScratchReg, E64, m1),
+  COMPARE(VU.set(kScratchReg, E64, m1),
           "018079d7       vsetvli   s3, zero_reg, E64, m1");
   COMPARE(vl(v2, a0, 0, VSew::E8), "02050107       vle8.v       v2, (a0)");
   COMPARE(vl(v2, a0, 0, VSew::E8), "02050107       vle8.v       v2, (a0)");
@@ -614,8 +615,25 @@ TEST(RVV) {
   COMPARE(vnclipu_vx(v17, v14, a5), "bae7c8d7       vnclipu.wx v17, v14, a5");
   COMPARE(vnclipu_vv(v17, v14, v28), "baee08d7       vnclipu.wv v17, v14, v28");
 
+  // Vector Integer Extension
+  COMPARE(vzext_vf8(v17, v14), "4ae128d7       vzext.vf8 v17, v14");
+  COMPARE(vsext_vf8(v17, v14), "4ae1a8d7       vsext.vf8 v17, v14");
+  COMPARE(vzext_vf4(v17, v14), "4ae228d7       vzext.vf4 v17, v14");
+  COMPARE(vsext_vf4(v17, v14), "4ae2a8d7       vsext.vf4 v17, v14");
+  COMPARE(vzext_vf2(v17, v14), "4ae328d7       vzext.vf2 v17, v14");
+  COMPARE(vsext_vf2(v17, v14), "4ae3a8d7       vsext.vf2 v17, v14");
+
+  // Vector Mask Instructions
+  COMPARE(vfirst_m(a5, v17), "4318a7d7       vfirst.m  a5, v17");
+  COMPARE(vcpop_m(a5, v17), "431827d7       vcpop.m   a5, v17");
+
+  COMPARE(vfsqrt_v(v17, v28), "4fc018d7       vfsqrt.v  v17, v28")
+  COMPARE(vfrsqrt7_v(v17, v28), "4fc218d7       vfrsqrt7.v v17, v28")
+  COMPARE(vfrec7_v(v17, v28), "4fc298d7       vfrec7.v  v17, v28")
+  COMPARE(vfclass_v(v17, v28), "4fc818d7       vfclass.v  v17, v28")
+
   VERIFY_RUN();
 }
-#endif
+
 }  // namespace internal
 }  // namespace v8

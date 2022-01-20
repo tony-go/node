@@ -496,6 +496,13 @@ void TurboAssembler::CallBuiltin(Builtin builtin) {
   Call(ip);
 }
 
+void TurboAssembler::TailCallBuiltin(Builtin builtin) {
+  ASM_CODE_COMMENT_STRING(this,
+                          CommentForOffHeapTrampoline("tail call", builtin));
+  mov(ip, Operand(BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET));
+  b(ip);
+}
+
 void TurboAssembler::Drop(int count) {
   if (count > 0) {
     int total = count * kSystemPointerSize;
@@ -1578,7 +1585,7 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles, Register argument_count,
   // Clear top frame.
   Move(ip, ExternalReference::Create(IsolateAddressId::kCEntryFPAddress,
                                      isolate()));
-  StoreU64(MemOperand(ip), Operand(0, RelocInfo::NONE), r0);
+  StoreU64(MemOperand(ip), Operand(0, RelocInfo::NO_INFO), r0);
 
   // Restore current context from top and clear it in debug mode.
   Move(ip,
@@ -1691,7 +1698,7 @@ void MacroAssembler::InvokePrologue(Register expected_parameter_count,
     lay(dest, MemOperand(dest, kSystemPointerSize));
     SubS64(num, num, Operand(1));
     bind(&check);
-    b(ge, &copy);
+    b(gt, &copy);
   }
 
   // Fill remaining expected arguments with undefined values.
@@ -2013,7 +2020,7 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
   Jump(code, RelocInfo::CODE_TARGET);
 }
 
-void MacroAssembler::JumpToInstructionStream(Address entry) {
+void MacroAssembler::JumpToOffHeapInstructionStream(Address entry) {
   mov(kOffHeapTrampolineRegister, Operand(entry, RelocInfo::OFF_HEAP_TARGET));
   Jump(kOffHeapTrampolineRegister);
 }
@@ -2456,7 +2463,7 @@ void TurboAssembler::mov(Register dst, const Operand& src) {
     value = src.immediate();
   }
 
-  if (src.rmode() != RelocInfo::NONE) {
+  if (src.rmode() != RelocInfo::NO_INFO) {
     // some form of relocation needed
     RecordRelocInfo(src.rmode(), value);
   }
@@ -2464,7 +2471,7 @@ void TurboAssembler::mov(Register dst, const Operand& src) {
   int32_t hi_32 = static_cast<int32_t>(value >> 32);
   int32_t lo_32 = static_cast<int32_t>(value);
 
-  if (src.rmode() == RelocInfo::NONE) {
+  if (src.rmode() == RelocInfo::NO_INFO) {
     if (hi_32 == 0) {
       if (is_uint16(lo_32)) {
         llill(dst, Operand(lo_32));
@@ -3431,7 +3438,7 @@ void TurboAssembler::CmpS64(Register src1, Register src2) { cgr(src1, src2); }
 // Compare 32-bit Register vs Immediate
 // This helper will set up proper relocation entries if required.
 void TurboAssembler::CmpS32(Register dst, const Operand& opnd) {
-  if (opnd.rmode() == RelocInfo::NONE) {
+  if (opnd.rmode() == RelocInfo::NO_INFO) {
     intptr_t value = opnd.immediate();
     if (is_int16(value))
       chi(dst, opnd);
@@ -3447,7 +3454,7 @@ void TurboAssembler::CmpS32(Register dst, const Operand& opnd) {
 // Compare Pointer Sized  Register vs Immediate
 // This helper will set up proper relocation entries if required.
 void TurboAssembler::CmpS64(Register dst, const Operand& opnd) {
-  if (opnd.rmode() == RelocInfo::NONE) {
+  if (opnd.rmode() == RelocInfo::NO_INFO) {
     cgfi(dst, opnd);
   } else {
     mov(r0, opnd);  // Need to generate 64-bit relocation
@@ -3619,7 +3626,7 @@ void TurboAssembler::StoreU64(Register src, const MemOperand& mem,
 void TurboAssembler::StoreU64(const MemOperand& mem, const Operand& opnd,
                               Register scratch) {
   // Relocations not supported
-  DCHECK_EQ(opnd.rmode(), RelocInfo::NONE);
+  DCHECK_EQ(opnd.rmode(), RelocInfo::NO_INFO);
 
   // Try to use MVGHI/MVHI
   if (CpuFeatures::IsSupported(GENERAL_INSTR_EXT) && is_uint12(mem.offset()) &&
@@ -5217,6 +5224,38 @@ void TurboAssembler::I8x16ReplaceLane(Simd128Register dst, Simd128Register src1,
   vlvg(dst, src2, MemOperand(r0, 15 - imm_lane_idx), Condition(0));
 }
 
+#define SIMD_UNOP_LIST_VRR_A(V)    \
+  V(F64x2Abs, vfpso, 2, 0, 3)      \
+  V(F64x2Neg, vfpso, 0, 0, 3)      \
+  V(F64x2Sqrt, vfsq, 0, 0, 3)      \
+  V(F64x2Ceil, vfi, 6, 0, 3)       \
+  V(F64x2Floor, vfi, 7, 0, 3)      \
+  V(F64x2Trunc, vfi, 5, 0, 3)      \
+  V(F64x2NearestInt, vfi, 4, 0, 3) \
+  V(F32x4Abs, vfpso, 2, 0, 2)      \
+  V(F32x4Neg, vfpso, 0, 0, 2)      \
+  V(F32x4Sqrt, vfsq, 0, 0, 2)      \
+  V(F32x4Ceil, vfi, 6, 0, 2)       \
+  V(F32x4Floor, vfi, 7, 0, 2)      \
+  V(F32x4Trunc, vfi, 5, 0, 2)      \
+  V(F32x4NearestInt, vfi, 4, 0, 2) \
+  V(I64x2Abs, vlp, 0, 0, 3)        \
+  V(I32x4Abs, vlp, 0, 0, 2)        \
+  V(I16x8Abs, vlp, 0, 0, 1)        \
+  V(I8x16Abs, vlp, 0, 0, 0)        \
+  V(I64x2Neg, vlc, 0, 0, 3)        \
+  V(I32x4Neg, vlc, 0, 0, 2)        \
+  V(I16x8Neg, vlc, 0, 0, 1)        \
+  V(I8x16Neg, vlc, 0, 0, 0)
+
+#define EMIT_SIMD_UNOP_VRR_A(name, op, c1, c2, c3)                      \
+  void TurboAssembler::name(Simd128Register dst, Simd128Register src) { \
+    op(dst, src, Condition(c1), Condition(c2), Condition(c3));          \
+  }
+SIMD_UNOP_LIST_VRR_A(EMIT_SIMD_UNOP_VRR_A)
+#undef EMIT_SIMD_UNOP_VRR_A
+#undef SIMD_UNOP_LIST_VRR_A
+
 #define SIMD_BINOP_LIST_VRR_B(V) \
   V(I64x2Eq, vceq, 0, 3)         \
   V(I64x2GtS, vch, 0, 3)         \
@@ -5552,6 +5591,22 @@ STORE_LANE_LIST(STORE_LANE)
 #undef STORE_LANE_LIST
 #undef CAN_LOAD_STORE_REVERSE
 #undef IS_BIG_ENDIAN
+
+void MacroAssembler::LoadStackLimit(Register destination, StackLimitKind kind) {
+  ASM_CODE_COMMENT(this);
+  DCHECK(root_array_available());
+  Isolate* isolate = this->isolate();
+  ExternalReference limit =
+      kind == StackLimitKind::kRealStackLimit
+          ? ExternalReference::address_of_real_jslimit(isolate)
+          : ExternalReference::address_of_jslimit(isolate);
+  DCHECK(TurboAssembler::IsAddressableThroughRootRegister(isolate, limit));
+
+  intptr_t offset =
+      TurboAssembler::RootRegisterOffsetForExternalReference(isolate, limit);
+  CHECK(is_int32(offset));
+  LoadU64(destination, MemOperand(kRootRegister, offset));
+}
 
 #undef kScratchDoubleReg
 

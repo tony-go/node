@@ -519,12 +519,29 @@ int CompareFirstChar(RegExpTree* const* a, RegExpTree* const* b) {
 
 #ifdef V8_INTL_SUPPORT
 
-// Case Insensitve comparesion
-int CompareFirstCharCaseInsensitve(RegExpTree* const* a, RegExpTree* const* b) {
+int CompareCaseInsensitive(const icu::UnicodeString& a,
+                           const icu::UnicodeString& b) {
+  return a.caseCompare(b, U_FOLD_CASE_DEFAULT);
+}
+
+int CompareFirstCharCaseInsensitive(RegExpTree* const* a,
+                                    RegExpTree* const* b) {
   RegExpAtom* atom1 = (*a)->AsAtom();
   RegExpAtom* atom2 = (*b)->AsAtom();
-  icu::UnicodeString character1(atom1->data().at(0));
-  return character1.caseCompare(atom2->data().at(0), U_FOLD_CASE_DEFAULT);
+  return CompareCaseInsensitive(icu::UnicodeString{atom1->data().at(0)},
+                                icu::UnicodeString{atom2->data().at(0)});
+}
+
+bool Equals(bool ignore_case, const icu::UnicodeString& a,
+            const icu::UnicodeString& b) {
+  if (a == b) return true;
+  if (ignore_case) return CompareCaseInsensitive(a, b) == 0;
+  return false;  // Case-sensitive equality already checked above.
+}
+
+bool CharAtEquals(bool ignore_case, int index, const RegExpAtom* a,
+                  const RegExpAtom* b) {
+  return Equals(ignore_case, a->data().at(index), b->data().at(index));
 }
 
 #else
@@ -540,20 +557,43 @@ unibrow::uchar Canonical(
   return canonical;
 }
 
-int CompareFirstCharCaseIndependent(
+int CompareCaseInsensitive(
+    unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize,
+    unibrow::uchar a, unibrow::uchar b) {
+  if (a == b) return 0;
+  if (a >= 'a' || b >= 'a') {
+    a = Canonical(canonicalize, a);
+    b = Canonical(canonicalize, b);
+  }
+  return static_cast<int>(a) - static_cast<int>(b);
+}
+
+int CompareFirstCharCaseInsensitive(
     unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize,
     RegExpTree* const* a, RegExpTree* const* b) {
   RegExpAtom* atom1 = (*a)->AsAtom();
   RegExpAtom* atom2 = (*b)->AsAtom();
-  unibrow::uchar character1 = atom1->data().at(0);
-  unibrow::uchar character2 = atom2->data().at(0);
-  if (character1 == character2) return 0;
-  if (character1 >= 'a' || character2 >= 'a') {
-    character1 = Canonical(canonicalize, character1);
-    character2 = Canonical(canonicalize, character2);
-  }
-  return static_cast<int>(character1) - static_cast<int>(character2);
+  return CompareCaseInsensitive(canonicalize, atom1->data().at(0),
+                                atom2->data().at(0));
 }
+
+bool Equals(bool ignore_case,
+            unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize,
+            unibrow::uchar a, unibrow::uchar b) {
+  if (a == b) return true;
+  if (ignore_case) {
+    return CompareCaseInsensitive(canonicalize, a, b) == 0;
+  }
+  return false;  // Case-sensitive equality already checked above.
+}
+
+bool CharAtEquals(bool ignore_case,
+                  unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize,
+                  int index, const RegExpAtom* a, const RegExpAtom* b) {
+  return Equals(ignore_case, canonicalize, a->data().at(index),
+                b->data().at(index));
+}
+
 #endif  // V8_INTL_SUPPORT
 
 }  // namespace
@@ -591,14 +631,14 @@ bool RegExpDisjunction::SortConsecutiveAtoms(RegExpCompiler* compiler) {
     DCHECK_LE(first_atom, i);
     if (IsIgnoreCase(compiler->flags())) {
 #ifdef V8_INTL_SUPPORT
-      alternatives->StableSort(CompareFirstCharCaseInsensitve, first_atom,
+      alternatives->StableSort(CompareFirstCharCaseInsensitive, first_atom,
                                i - first_atom);
 #else
       unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize =
           compiler->isolate()->regexp_macro_assembler_canonicalize();
       auto compare_closure = [canonicalize](RegExpTree* const* a,
                                             RegExpTree* const* b) {
-        return CompareFirstCharCaseIndependent(canonicalize, a, b);
+        return CompareFirstCharCaseInsensitive(canonicalize, a, b);
       };
       alternatives->StableSort(compare_closure, first_atom, i - first_atom);
 #endif  // V8_INTL_SUPPORT
@@ -615,6 +655,7 @@ void RegExpDisjunction::RationalizeConsecutiveAtoms(RegExpCompiler* compiler) {
   Zone* zone = compiler->zone();
   ZoneList<RegExpTree*>* alternatives = this->alternatives();
   int length = alternatives->length();
+  const bool ignore_case = IsIgnoreCase(compiler->flags());
 
   int write_posn = 0;
   int i = 0;
@@ -629,7 +670,12 @@ void RegExpDisjunction::RationalizeConsecutiveAtoms(RegExpCompiler* compiler) {
 #ifdef V8_INTL_SUPPORT
     icu::UnicodeString common_prefix(atom->data().at(0));
 #else
+    unibrow::Mapping<unibrow::Ecma262Canonicalize>* const canonicalize =
+        compiler->isolate()->regexp_macro_assembler_canonicalize();
     unibrow::uchar common_prefix = atom->data().at(0);
+    if (ignore_case) {
+      common_prefix = Canonical(canonicalize, common_prefix);
+    }
 #endif  // V8_INTL_SUPPORT
     int first_with_prefix = i;
     int prefix_length = atom->length();
@@ -637,26 +683,15 @@ void RegExpDisjunction::RationalizeConsecutiveAtoms(RegExpCompiler* compiler) {
     while (i < length) {
       alternative = alternatives->at(i);
       if (!alternative->IsAtom()) break;
-      RegExpAtom* const atom = alternative->AsAtom();
+      RegExpAtom* const alt_atom = alternative->AsAtom();
 #ifdef V8_INTL_SUPPORT
-      icu::UnicodeString new_prefix(atom->data().at(0));
-      if (new_prefix != common_prefix) {
-        if (!IsIgnoreCase(compiler->flags())) break;
-        if (common_prefix.caseCompare(new_prefix, U_FOLD_CASE_DEFAULT) != 0)
-          break;
-      }
+      icu::UnicodeString new_prefix(alt_atom->data().at(0));
+      if (!Equals(ignore_case, new_prefix, common_prefix)) break;
 #else
-      unibrow::uchar new_prefix = atom->data().at(0);
-      if (new_prefix != common_prefix) {
-        if (!IsIgnoreCase(compiler->flags())) break;
-        unibrow::Mapping<unibrow::Ecma262Canonicalize>* canonicalize =
-            compiler->isolate()->regexp_macro_assembler_canonicalize();
-        new_prefix = Canonical(canonicalize, new_prefix);
-        common_prefix = Canonical(canonicalize, common_prefix);
-        if (new_prefix != common_prefix) break;
-      }
+      unibrow::uchar new_prefix = alt_atom->data().at(0);
+      if (!Equals(ignore_case, canonicalize, new_prefix, common_prefix)) break;
 #endif  // V8_INTL_SUPPORT
-      prefix_length = std::min(prefix_length, atom->length());
+      prefix_length = std::min(prefix_length, alt_atom->length());
       i++;
     }
     if (i > first_with_prefix + 2) {
@@ -666,19 +701,24 @@ void RegExpDisjunction::RationalizeConsecutiveAtoms(RegExpCompiler* compiler) {
       // common prefix if the terms were similar or presorted in the input.
       // Find out how long the common prefix is.
       int run_length = i - first_with_prefix;
-      RegExpAtom* const atom = alternatives->at(first_with_prefix)->AsAtom();
+      RegExpAtom* const alt_atom =
+          alternatives->at(first_with_prefix)->AsAtom();
       for (int j = 1; j < run_length && prefix_length > 1; j++) {
         RegExpAtom* old_atom =
             alternatives->at(j + first_with_prefix)->AsAtom();
         for (int k = 1; k < prefix_length; k++) {
-          if (atom->data().at(k) != old_atom->data().at(k)) {
+#ifdef V8_INTL_SUPPORT
+          if (!CharAtEquals(ignore_case, k, alt_atom, old_atom)) {
+#else
+          if (!CharAtEquals(ignore_case, canonicalize, k, alt_atom, old_atom)) {
+#endif  // V8_INTL_SUPPORT
             prefix_length = k;
             break;
           }
         }
       }
       RegExpAtom* prefix =
-          zone->New<RegExpAtom>(atom->data().SubVector(0, prefix_length));
+          zone->New<RegExpAtom>(alt_atom->data().SubVector(0, prefix_length));
       ZoneList<RegExpTree*>* pair = zone->New<ZoneList<RegExpTree*>>(2, zone);
       pair->Add(prefix, zone);
       ZoneList<RegExpTree*>* suffixes =
@@ -741,12 +781,12 @@ void RegExpDisjunction::FixSingleCharacterDisjunctions(
     while (i < length) {
       alternative = alternatives->at(i);
       if (!alternative->IsAtom()) break;
-      RegExpAtom* const atom = alternative->AsAtom();
-      if (atom->length() != 1) break;
+      RegExpAtom* const alt_atom = alternative->AsAtom();
+      if (alt_atom->length() != 1) break;
       DCHECK_IMPLIES(IsUnicode(flags),
-                     !unibrow::Utf16::IsLeadSurrogate(atom->data().at(0)));
+                     !unibrow::Utf16::IsLeadSurrogate(alt_atom->data().at(0)));
       contains_trail_surrogate |=
-          unibrow::Utf16::IsTrailSurrogate(atom->data().at(0));
+          unibrow::Utf16::IsTrailSurrogate(alt_atom->data().at(0));
       i++;
     }
     if (i > first_in_run + 1) {
@@ -777,6 +817,8 @@ void RegExpDisjunction::FixSingleCharacterDisjunctions(
 
 RegExpNode* RegExpDisjunction::ToNode(RegExpCompiler* compiler,
                                       RegExpNode* on_success) {
+  compiler->ToNodeMaybeCheckForStackOverflow();
+
   ZoneList<RegExpTree*>* alternatives = this->alternatives();
 
   if (alternatives->length() > 2) {
@@ -810,7 +852,7 @@ namespace {
 //         \B to (?<=\w)(?=\w)|(?<=\W)(?=\W)
 RegExpNode* BoundaryAssertionAsLookaround(RegExpCompiler* compiler,
                                           RegExpNode* on_success,
-                                          RegExpAssertion::AssertionType type,
+                                          RegExpAssertion::Type type,
                                           RegExpFlags flags) {
   CHECK(NeedsUnicodeCaseEquivalents(flags));
   Zone* zone = compiler->zone();
@@ -826,7 +868,7 @@ RegExpNode* BoundaryAssertionAsLookaround(RegExpCompiler* compiler,
   for (int i = 0; i < 2; i++) {
     bool lookbehind_for_word = i == 0;
     bool lookahead_for_word =
-        (type == RegExpAssertion::BOUNDARY) ^ lookbehind_for_word;
+        (type == RegExpAssertion::Type::BOUNDARY) ^ lookbehind_for_word;
     // Look to the left.
     RegExpLookaround::Builder lookbehind(lookbehind_for_word, on_success,
                                          stack_register, position_register);
@@ -850,23 +892,24 @@ RegExpNode* RegExpAssertion::ToNode(RegExpCompiler* compiler,
   Zone* zone = compiler->zone();
 
   switch (assertion_type()) {
-    case START_OF_LINE:
+    case Type::START_OF_LINE:
       return AssertionNode::AfterNewline(on_success);
-    case START_OF_INPUT:
+    case Type::START_OF_INPUT:
       return AssertionNode::AtStart(on_success);
-    case BOUNDARY:
-      return NeedsUnicodeCaseEquivalents(compiler->flags())
-                 ? BoundaryAssertionAsLookaround(compiler, on_success, BOUNDARY,
-                                                 compiler->flags())
-                 : AssertionNode::AtBoundary(on_success);
-    case NON_BOUNDARY:
+    case Type::BOUNDARY:
       return NeedsUnicodeCaseEquivalents(compiler->flags())
                  ? BoundaryAssertionAsLookaround(
-                       compiler, on_success, NON_BOUNDARY, compiler->flags())
+                       compiler, on_success, Type::BOUNDARY, compiler->flags())
+                 : AssertionNode::AtBoundary(on_success);
+    case Type::NON_BOUNDARY:
+      return NeedsUnicodeCaseEquivalents(compiler->flags())
+                 ? BoundaryAssertionAsLookaround(compiler, on_success,
+                                                 Type::NON_BOUNDARY,
+                                                 compiler->flags())
                  : AssertionNode::AtNonBoundary(on_success);
-    case END_OF_INPUT:
+    case Type::END_OF_INPUT:
       return AssertionNode::AtEnd(on_success);
-    case END_OF_LINE: {
+    case Type::END_OF_LINE: {
       // Compile $ in multiline regexps as an alternation with a positive
       // lookahead in one side and an end-of-input on the other side.
       // We need two registers for the lookahead.
@@ -1037,11 +1080,12 @@ class AssertionSequenceRewriter final {
 
     // Bitfield of all seen assertions.
     uint32_t seen_assertions = 0;
-    STATIC_ASSERT(RegExpAssertion::LAST_TYPE < kUInt32Size * kBitsPerByte);
+    STATIC_ASSERT(static_cast<int>(RegExpAssertion::Type::LAST_ASSERTION_TYPE) <
+                  kUInt32Size * kBitsPerByte);
 
     for (int i = from; i < to; i++) {
       RegExpAssertion* t = terms_->at(i)->AsAssertion();
-      const uint32_t bit = 1 << t->assertion_type();
+      const uint32_t bit = 1 << static_cast<int>(t->assertion_type());
 
       if (seen_assertions & bit) {
         // Fold duplicates.
@@ -1053,7 +1097,8 @@ class AssertionSequenceRewriter final {
 
     // Collapse failures.
     const uint32_t always_fails_mask =
-        1 << RegExpAssertion::BOUNDARY | 1 << RegExpAssertion::NON_BOUNDARY;
+        1 << static_cast<int>(RegExpAssertion::Type::BOUNDARY) |
+        1 << static_cast<int>(RegExpAssertion::Type::NON_BOUNDARY);
     if ((seen_assertions & always_fails_mask) == always_fails_mask) {
       ReplaceSequenceWithFailure(from, to);
     }
@@ -1085,6 +1130,8 @@ class AssertionSequenceRewriter final {
 
 RegExpNode* RegExpAlternative::ToNode(RegExpCompiler* compiler,
                                       RegExpNode* on_success) {
+  compiler->ToNodeMaybeCheckForStackOverflow();
+
   ZoneList<RegExpTree*>* children = nodes();
 
   AssertionSequenceRewriter::MaybeRewrite(children, compiler->zone());

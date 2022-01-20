@@ -85,11 +85,11 @@ static v8::CodeEventType GetCodeEventTypeForTag(
 
 static const char* ComputeMarker(SharedFunctionInfo shared, AbstractCode code) {
   CodeKind kind = code.kind();
-  // We record interpreter trampoline builting copies as having the
+  // We record interpreter trampoline builtin copies as having the
   // "interpreted" marker.
   if (FLAG_interpreted_frames_native_stack && kind == CodeKind::BUILTIN &&
       code.GetCode().is_interpreter_trampoline_builtin() &&
-      code.GetCode() !=
+      ToCodeT(code.GetCode()) !=
           *BUILTIN_CODE(shared.GetIsolate(), InterpreterEntryTrampoline)) {
     kind = CodeKind::INTERPRETED_FUNCTION;
   }
@@ -1513,7 +1513,7 @@ void Logger::CodeDisableOptEvent(Handle<AbstractCode> code,
   MSG_BUILDER();
   msg << kLogEventsNames[CodeEventListener::CODE_DISABLE_OPT_EVENT] << kNext
       << shared->DebugNameCStr().get() << kNext
-      << GetBailoutReason(shared->disable_optimization_reason());
+      << GetBailoutReason(shared->disabled_optimization_reason());
   msg.WriteToLogFile();
 }
 
@@ -1610,20 +1610,6 @@ void Logger::MoveEventInternal(LogEventsAndTags event, Address from,
   MSG_BUILDER();
   msg << kLogEventsNames[event] << kNext << reinterpret_cast<void*>(from)
       << kNext << reinterpret_cast<void*>(to);
-  msg.WriteToLogFile();
-}
-
-void Logger::ResourceEvent(const char* name, const char* tag) {
-  if (!FLAG_log) return;
-  MSG_BUILDER();
-  msg << name << kNext << tag << kNext;
-
-  uint32_t sec, usec;
-  if (base::OS::GetUserTime(&sec, &usec) != -1) {
-    msg << sec << kNext << usec << kNext;
-  }
-  msg.AppendFormatString("%.0f",
-                         V8::GetCurrentPlatform()->CurrentClockTimeMillis());
   msg.WriteToLogFile();
 }
 
@@ -1912,7 +1898,7 @@ EnumerateCompiledFunctions(Heap* heap) {
           Script::cast(function.shared().script()).HasValidSource()) {
         compiled_funcs.emplace_back(
             handle(function.shared(), isolate),
-            handle(AbstractCode::cast(function.code()), isolate));
+            handle(AbstractCode::cast(FromCodeT(function.code())), isolate));
       }
     }
   }
@@ -1976,7 +1962,6 @@ void Logger::LogAccessorCallbacks() {
 }
 
 void Logger::LogAllMaps() {
-  DisallowGarbageCollection no_gc;
   Heap* heap = isolate_->heap();
   CombinedHeapObjectIterator iterator(heap);
   for (HeapObject obj = iterator.Next(); !obj.is_null();
@@ -2183,7 +2168,7 @@ void ExistingCodeLogger::LogCodeObject(Object object) {
       break;
     case CodeKind::BUILTIN:
       if (Code::cast(object).is_interpreter_trampoline_builtin() &&
-          Code::cast(object) !=
+          ToCodeT(Code::cast(object)) !=
               *BUILTIN_CODE(isolate_, InterpreterEntryTrampoline)) {
         return;
       }
@@ -2245,13 +2230,14 @@ void ExistingCodeLogger::LogCompiledFunctions() {
       LogExistingFunction(
           shared,
           Handle<AbstractCode>(
-              AbstractCode::cast(shared->InterpreterTrampoline()), isolate_));
+              AbstractCode::cast(FromCodeT(shared->InterpreterTrampoline())),
+              isolate_));
     }
     if (shared->HasBaselineCode()) {
-      LogExistingFunction(
-          shared, Handle<AbstractCode>(
-                      AbstractCode::cast(shared->baseline_code(kAcquireLoad)),
-                      isolate_));
+      LogExistingFunction(shared, Handle<AbstractCode>(
+                                      AbstractCode::cast(FromCodeT(
+                                          shared->baseline_code(kAcquireLoad))),
+                                      isolate_));
     }
     if (pair.second.is_identical_to(BUILTIN_CODE(isolate_, CompileLazy)))
       continue;

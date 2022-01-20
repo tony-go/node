@@ -338,10 +338,11 @@ const AstRawString* AstValueFactory::GetTwoByteStringInternal(
                    base::Vector<const byte>::cast(literal));
 }
 
-const AstRawString* AstValueFactory::GetString(Handle<String> literal) {
+const AstRawString* AstValueFactory::GetString(
+    String literal, const SharedStringAccessGuardIfNeeded& access_guard) {
   const AstRawString* result = nullptr;
   DisallowGarbageCollection no_gc;
-  String::FlatContent content = literal->GetFlatContent(no_gc);
+  String::FlatContent content = literal.GetFlatContent(no_gc, access_guard);
   if (content.IsOneByte()) {
     result = GetOneByteStringInternal(content.ToOneByteVector());
   } else {
@@ -351,32 +352,23 @@ const AstRawString* AstValueFactory::GetString(Handle<String> literal) {
   return result;
 }
 
-const AstRawString* AstValueFactory::CloneFromOtherFactory(
-    const AstRawString* raw_string) {
-  const AstRawString* result =
-      GetString(raw_string->raw_hash_field(), raw_string->is_one_byte(),
-                base::Vector<const byte>(raw_string->raw_data(),
-                                         raw_string->byte_length()));
-  return result;
-}
-
 AstConsString* AstValueFactory::NewConsString() {
-  return zone()->New<AstConsString>();
+  return single_parse_zone()->New<AstConsString>();
 }
 
 AstConsString* AstValueFactory::NewConsString(const AstRawString* str) {
-  return NewConsString()->AddString(zone(), str);
+  return NewConsString()->AddString(single_parse_zone(), str);
 }
 
 AstConsString* AstValueFactory::NewConsString(const AstRawString* str1,
                                               const AstRawString* str2) {
-  return NewConsString()->AddString(zone(), str1)->AddString(zone(), str2);
+  return NewConsString()
+      ->AddString(single_parse_zone(), str1)
+      ->AddString(single_parse_zone(), str2);
 }
 
 template <typename IsolateT>
 void AstValueFactory::Internalize(IsolateT* isolate) {
-  if (!zone_) return;
-
   // Strings need to be internalized before values, because values refer to
   // strings.
   for (AstRawString* current = strings_; current != nullptr;) {
@@ -386,7 +378,6 @@ void AstValueFactory::Internalize(IsolateT* isolate) {
   }
 
   ResetStrings();
-  zone_ = nullptr;
 }
 template EXPORT_TEMPLATE_DEFINE(
     V8_EXPORT_PRIVATE) void AstValueFactory::Internalize(Isolate* isolate);
@@ -406,9 +397,9 @@ const AstRawString* AstValueFactory::GetString(
       [&]() {
         // Copy literal contents for later comparison.
         int length = literal_bytes.length();
-        byte* new_literal_bytes = zone()->NewArray<byte>(length);
+        byte* new_literal_bytes = ast_raw_string_zone()->NewArray<byte>(length);
         memcpy(new_literal_bytes, literal_bytes.begin(), length);
-        AstRawString* new_string = zone()->New<AstRawString>(
+        AstRawString* new_string = ast_raw_string_zone()->New<AstRawString>(
             is_one_byte, base::Vector<const byte>(new_literal_bytes, length),
             raw_hash_field);
         CHECK_NOT_NULL(new_string);

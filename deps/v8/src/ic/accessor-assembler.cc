@@ -225,8 +225,7 @@ void AccessorAssembler::HandleLoadICHandlerCase(
 
   BIND(&call_handler);
   {
-    // TODO(v8:11880): avoid roundtrips between cdc and code.
-    TNode<Code> code_handler = FromCodeT(CAST(handler));
+    TNode<CodeT> code_handler = CAST(handler);
     exit_point->ReturnCallStub(LoadWithVectorDescriptor{}, code_handler,
                                p->context(), p->lookup_start_object(),
                                p->name(), p->slot(), p->vector());
@@ -600,7 +599,15 @@ void AccessorAssembler::HandleLoadICSmiHandlerCase(
         Return(result);
 
         BIND(&if_oob_string);
-        GotoIf(IntPtrLessThan(index, IntPtrConstant(0)), miss);
+        if (Is64()) {
+          // Indices >= 4294967295 are stored as named properties; handle them
+          // in the runtime.
+          GotoIfNot(UintPtrLessThanOrEqual(
+                        index, IntPtrConstant(JSObject::kMaxElementIndex)),
+                    miss);
+        } else {
+          GotoIf(IntPtrLessThan(index, IntPtrConstant(0)), miss);
+        }
         TNode<BoolT> allow_out_of_bounds =
             IsSetWord<LoadHandler::AllowOutOfBoundsBits>(handler_word);
         GotoIfNot(allow_out_of_bounds, miss);
@@ -988,8 +995,7 @@ TNode<Object> AccessorAssembler::HandleProtoHandler(
     if (on_code_handler) {
       Label if_smi_handler(this);
       GotoIf(TaggedIsSmi(smi_or_code_handler), &if_smi_handler);
-      // TODO(v8:11880): avoid roundtrips between cdc and code.
-      TNode<Code> code = FromCodeT(CAST(smi_or_code_handler));
+      TNode<CodeT> code = CAST(smi_or_code_handler);
       on_code_handler(code);
 
       BIND(&if_smi_handler);
@@ -1161,7 +1167,9 @@ void AccessorAssembler::JumpIfDataProperty(TNode<Uint32T> details,
                                     PropertyDetails::kAttributesReadOnlyMask));
   }
   TNode<Uint32T> kind = DecodeWord32<PropertyDetails::KindField>(details);
-  GotoIf(Word32Equal(kind, Int32Constant(kData)), writable);
+  GotoIf(
+      Word32Equal(kind, Int32Constant(static_cast<int>(PropertyKind::kData))),
+      writable);
   // Fall through if it's an accessor property.
 }
 
@@ -1234,7 +1242,7 @@ void AccessorAssembler::HandleStoreICHandlerCase(
       // Check that the property is a writable data property (no accessor).
       const int kTypeAndReadOnlyMask = PropertyDetails::KindField::kMask |
                                        PropertyDetails::kAttributesReadOnlyMask;
-      STATIC_ASSERT(kData == 0);
+      STATIC_ASSERT(static_cast<int>(PropertyKind::kData) == 0);
       GotoIf(IsSetWord32(details, kTypeAndReadOnlyMask), miss);
 
       if (V8_DICT_PROPERTY_CONST_TRACKING_BOOL) {
@@ -1326,8 +1334,7 @@ void AccessorAssembler::HandleStoreICHandlerCase(
     // |handler| is a heap object. Must be code, call it.
     BIND(&call_handler);
     {
-      // TODO(v8:11880): avoid roundtrips between cdc and code.
-      TNode<Code> code_handler = FromCodeT(CAST(strong_handler));
+      TNode<CodeT> code_handler = CAST(strong_handler);
       TailCallStub(StoreWithVectorDescriptor{}, code_handler, p->context(),
                    p->receiver(), p->name(), p->value(), p->slot(),
                    p->vector());
@@ -1406,7 +1413,7 @@ void AccessorAssembler::HandleStoreICTransitionMapHandlerCase(
         PropertyDetails::KindField::kMask |
         PropertyDetails::kAttributesDontDeleteMask |
         PropertyDetails::kAttributesReadOnlyMask;
-    STATIC_ASSERT(kData == 0);
+    STATIC_ASSERT(static_cast<int>(PropertyKind::kData) == 0);
     // Both DontDelete and ReadOnly attributes must not be set and it has to be
     // a kData property.
     GotoIf(IsSetWord32(details, kKindAndAttributesDontDeleteReadOnlyMask),
@@ -1497,7 +1504,7 @@ void AccessorAssembler::OverwriteExistingFastDataProperty(
 
   CSA_DCHECK(this,
              Word32Equal(DecodeWord32<PropertyDetails::KindField>(details),
-                         Int32Constant(kData)));
+                         Int32Constant(static_cast<int>(PropertyKind::kData))));
 
   Branch(Word32Equal(
              DecodeWord32<PropertyDetails::LocationField>(details),
@@ -1696,7 +1703,7 @@ void AccessorAssembler::HandleStoreICProtoHandler(
   OnCodeHandler on_code_handler;
   if (support_elements == kSupportElements) {
     // Code sub-handlers are expected only in KeyedStoreICs.
-    on_code_handler = [=](TNode<Code> code_handler) {
+    on_code_handler = [=](TNode<CodeT> code_handler) {
       // This is either element store or transitioning element store.
       Label if_element_store(this), if_transitioning_element_store(this);
       Branch(IsStoreHandler0Map(LoadMap(handler)), &if_element_store,
@@ -1733,7 +1740,7 @@ void AccessorAssembler::HandleStoreICProtoHandler(
         const int kTypeAndReadOnlyMask =
             PropertyDetails::KindField::kMask |
             PropertyDetails::kAttributesReadOnlyMask;
-        STATIC_ASSERT(kData == 0);
+        STATIC_ASSERT(static_cast<int>(PropertyKind::kData) == 0);
         GotoIf(IsSetWord32(details, kTypeAndReadOnlyMask), miss);
 
         StoreValueByKeyIndex<PropertyDictionary>(properties, name_index,
@@ -2939,7 +2946,7 @@ void AccessorAssembler::LoadIC_BytecodeHandler(const LazyLoadICParameters* p,
 
     // Call into the stub that implements the non-inlined parts of LoadIC.
     Callable ic = Builtins::CallableFor(isolate(), Builtin::kLoadIC_Noninlined);
-    TNode<Code> code_target = HeapConstant(ic.code());
+    TNode<CodeT> code_target = HeapConstant(ic.code());
     exit_point->ReturnCallStub(ic.descriptor(), code_target, p->context(),
                                p->receiver_and_lookup_start_object(), p->name(),
                                p->slot(), p->vector());
@@ -3735,7 +3742,7 @@ void AccessorAssembler::StoreGlobalIC_PropertyCellCase(
   GotoIf(IsSetWord32(details, PropertyDetails::kAttributesReadOnlyMask), miss);
   CSA_DCHECK(this,
              Word32Equal(DecodeWord32<PropertyDetails::KindField>(details),
-                         Int32Constant(kData)));
+                         Int32Constant(static_cast<int>(PropertyKind::kData))));
 
   TNode<Uint32T> type =
       DecodeWord32<PropertyDetails::PropertyCellTypeField>(details);
@@ -3966,8 +3973,7 @@ void AccessorAssembler::StoreInArrayLiteralIC(const StoreICParameters* p) {
 
       {
         // Call the handler.
-        // TODO(v8:11880): avoid roundtrips between cdc and code.
-        TNode<Code> code_handler = FromCodeT(CAST(handler));
+        TNode<CodeT> code_handler = CAST(handler);
         TailCallStub(StoreWithVectorDescriptor{}, code_handler, p->context(),
                      p->receiver(), p->name(), p->value(), p->slot(),
                      p->vector());
@@ -3980,9 +3986,8 @@ void AccessorAssembler::StoreInArrayLiteralIC(const StoreICParameters* p) {
         TNode<Map> transition_map =
             CAST(GetHeapObjectAssumeWeak(maybe_transition_map, &miss));
         GotoIf(IsDeprecatedMap(transition_map), &miss);
-        // TODO(v8:11880): avoid roundtrips between cdc and code.
-        TNode<Code> code = FromCodeT(
-            CAST(LoadObjectField(handler, StoreHandler::kSmiHandlerOffset)));
+        TNode<CodeT> code =
+            CAST(LoadObjectField(handler, StoreHandler::kSmiHandlerOffset));
         TailCallStub(StoreTransitionDescriptor{}, code, p->context(),
                      p->receiver(), p->name(), transition_map, p->value(),
                      p->slot(), p->vector());

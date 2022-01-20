@@ -130,7 +130,7 @@ class Immediate {
 
  private:
   const int32_t value_;
-  const RelocInfo::Mode rmode_ = RelocInfo::NONE;
+  const RelocInfo::Mode rmode_ = RelocInfo::NO_INFO;
 
   friend class Assembler;
 };
@@ -148,7 +148,7 @@ class Immediate64 {
 
  private:
   const int64_t value_;
-  const RelocInfo::Mode rmode_ = RelocInfo::NONE;
+  const RelocInfo::Mode rmode_ = RelocInfo::NO_INFO;
 
   friend class Assembler;
 };
@@ -456,7 +456,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
       Address pc, Address target,
       RelocInfo::Mode mode = RelocInfo::INTERNAL_REFERENCE);
 
-  inline Handle<Code> code_target_object_handle_at(Address pc);
+  inline Handle<CodeT> code_target_object_handle_at(Address pc);
   inline Handle<HeapObject> compressed_embedded_object_handle_at(Address pc);
   inline Address runtime_entry_at(Address pc);
 
@@ -543,6 +543,8 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   void popq(Register dst);
   void popq(Operand dst);
+
+  void incsspq(Register number_of_words);
 
   void leave();
 
@@ -802,7 +804,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void near_call(intptr_t disp, RelocInfo::Mode rmode);
   void near_jmp(intptr_t disp, RelocInfo::Mode rmode);
 
-  void call(Handle<Code> target,
+  void call(Handle<CodeT> target,
             RelocInfo::Mode rmode = RelocInfo::CODE_TARGET);
 
   // Call near absolute indirect, address in register
@@ -813,7 +815,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Use a 32-bit signed displacement.
   // Unconditional jump to L
   void jmp(Label* L, Label::Distance distance = Label::kFar);
-  void jmp(Handle<Code> target, RelocInfo::Mode rmode);
+  void jmp(Handle<CodeT> target, RelocInfo::Mode rmode);
   void jmp(Address entry, RelocInfo::Mode rmode);
 
   // Jump near absolute indirect (r64)
@@ -827,7 +829,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Conditional jumps
   void j(Condition cc, Label* L, Label::Distance distance = Label::kFar);
   void j(Condition cc, Address entry, RelocInfo::Mode rmode);
-  void j(Condition cc, Handle<Code> target, RelocInfo::Mode rmode);
+  void j(Condition cc, Handle<CodeT> target, RelocInfo::Mode rmode);
 
   // Floating-point operations
   void fld(int i);
@@ -1156,6 +1158,12 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   }                                                                          \
   void v##instruction(XMMRegister dst, Operand src) {                        \
     vinstr(0x##opcode, dst, xmm0, src, k##prefix, k##escape1##escape2, kW0); \
+  }                                                                          \
+  void v##instruction(YMMRegister dst, YMMRegister src) {                    \
+    vinstr(0x##opcode, dst, ymm0, src, k##prefix, k##escape1##escape2, kW0); \
+  }                                                                          \
+  void v##instruction(YMMRegister dst, Operand src) {                        \
+    vinstr(0x##opcode, dst, ymm0, src, k##prefix, k##escape1##escape2, kW0); \
   }
 
   SSSE3_UNOP_INSTRUCTION_LIST(DECLARE_SSSE3_UNOP_AVX_INSTRUCTION)
@@ -1167,6 +1175,12 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     // The mask operand is encoded in bits[7:4] of the immediate byte.
     emit(mask.code() << 4);
   }
+  void vpblendvb(YMMRegister dst, YMMRegister src1, YMMRegister src2,
+                 YMMRegister mask) {
+    vinstr(0x4C, dst, src1, src2, k66, k0F3A, kW0, AVX2);
+    // The mask operand is encoded in bits[7:4] of the immediate byte.
+    emit(mask.code() << 4);
+  }
 
   void vblendvps(XMMRegister dst, XMMRegister src1, XMMRegister src2,
                  XMMRegister mask) {
@@ -1174,10 +1188,22 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     // The mask operand is encoded in bits[7:4] of the immediate byte.
     emit(mask.code() << 4);
   }
+  void vblendvps(YMMRegister dst, YMMRegister src1, YMMRegister src2,
+                 YMMRegister mask) {
+    vinstr(0x4A, dst, src1, src2, k66, k0F3A, kW0, AVX);
+    // The mask operand is encoded in bits[7:4] of the immediate byte.
+    emit(mask.code() << 4);
+  }
 
   void vblendvpd(XMMRegister dst, XMMRegister src1, XMMRegister src2,
                  XMMRegister mask) {
     vinstr(0x4B, dst, src1, src2, k66, k0F3A, kW0);
+    // The mask operand is encoded in bits[7:4] of the immediate byte.
+    emit(mask.code() << 4);
+  }
+  void vblendvpd(YMMRegister dst, YMMRegister src1, YMMRegister src2,
+                 YMMRegister mask) {
+    vinstr(0x4B, dst, src1, src2, k66, k0F3A, kW0, AVX);
     // The mask operand is encoded in bits[7:4] of the immediate byte.
     emit(mask.code() << 4);
   }
@@ -1329,7 +1355,10 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // AVX instruction
   void vmovddup(XMMRegister dst, XMMRegister src);
   void vmovddup(XMMRegister dst, Operand src);
+  void vmovddup(YMMRegister dst, YMMRegister src);
+  void vmovddup(YMMRegister dst, Operand src);
   void vmovshdup(XMMRegister dst, XMMRegister src);
+  void vmovshdup(YMMRegister dst, YMMRegister src);
   void vbroadcastss(XMMRegister dst, Operand src);
   void vbroadcastss(XMMRegister dst, XMMRegister src);
   void vbroadcastss(YMMRegister dst, Operand src);
@@ -1567,15 +1596,26 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void vshufps(XMMRegister dst, XMMRegister src1, XMMRegister src2, byte imm8) {
     vps(0xC6, dst, src1, src2, imm8);
   }
+  void vshufps(YMMRegister dst, YMMRegister src1, YMMRegister src2, byte imm8) {
+    vps(0xC6, dst, src1, src2, imm8);
+  }
 
   void vmovaps(XMMRegister dst, XMMRegister src) { vps(0x28, dst, xmm0, src); }
+  void vmovaps(YMMRegister dst, YMMRegister src) { vps(0x28, dst, ymm0, src); }
   void vmovaps(XMMRegister dst, Operand src) { vps(0x28, dst, xmm0, src); }
+  void vmovaps(YMMRegister dst, Operand src) { vps(0x28, dst, ymm0, src); }
   void vmovups(XMMRegister dst, XMMRegister src) { vps(0x10, dst, xmm0, src); }
+  void vmovups(YMMRegister dst, YMMRegister src) { vps(0x10, dst, ymm0, src); }
   void vmovups(XMMRegister dst, Operand src) { vps(0x10, dst, xmm0, src); }
+  void vmovups(YMMRegister dst, Operand src) { vps(0x10, dst, ymm0, src); }
   void vmovups(Operand dst, XMMRegister src) { vps(0x11, src, xmm0, dst); }
+  void vmovups(Operand dst, YMMRegister src) { vps(0x11, src, ymm0, dst); }
   void vmovapd(XMMRegister dst, XMMRegister src) { vpd(0x28, dst, xmm0, src); }
+  void vmovapd(YMMRegister dst, YMMRegister src) { vpd(0x28, dst, ymm0, src); }
   void vmovupd(XMMRegister dst, Operand src) { vpd(0x10, dst, xmm0, src); }
+  void vmovupd(YMMRegister dst, Operand src) { vpd(0x10, dst, ymm0, src); }
   void vmovupd(Operand dst, XMMRegister src) { vpd(0x11, src, xmm0, dst); }
+  void vmovupd(Operand dst, YMMRegister src) { vpd(0x11, src, ymm0, dst); }
   void vmovmskps(Register dst, XMMRegister src) {
     XMMRegister idst = XMMRegister::from_code(dst.code());
     vps(0x50, idst, xmm0, src);
@@ -1774,8 +1814,12 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void vps(byte op, YMMRegister dst, YMMRegister src1, Operand src2);
   void vps(byte op, XMMRegister dst, XMMRegister src1, XMMRegister src2,
            byte imm8);
+  void vps(byte op, YMMRegister dst, YMMRegister src1, YMMRegister src2,
+           byte imm8);
   void vpd(byte op, XMMRegister dst, XMMRegister src1, XMMRegister src2);
+  void vpd(byte op, YMMRegister dst, YMMRegister src1, YMMRegister src2);
   void vpd(byte op, XMMRegister dst, XMMRegister src1, Operand src2);
+  void vpd(byte op, YMMRegister dst, YMMRegister src1, Operand src2);
 
   // AVX2 instructions
 #define AVX2_INSTRUCTION(instr, prefix, escape1, escape2, opcode)           \
@@ -1945,9 +1989,9 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Writes a single word of data in the code stream.
   // Used for inline tables, e.g., jump-tables.
   void db(uint8_t data);
-  void dd(uint32_t data, RelocInfo::Mode rmode = RelocInfo::NONE);
-  void dq(uint64_t data, RelocInfo::Mode rmode = RelocInfo::NONE);
-  void dp(uintptr_t data, RelocInfo::Mode rmode = RelocInfo::NONE) {
+  void dd(uint32_t data, RelocInfo::Mode rmode = RelocInfo::NO_INFO);
+  void dq(uint64_t data, RelocInfo::Mode rmode = RelocInfo::NO_INFO);
+  void dp(uintptr_t data, RelocInfo::Mode rmode = RelocInfo::NO_INFO) {
     dq(data, rmode);
   }
   void dq(Label* label);

@@ -35,17 +35,15 @@ void ExpectSharedFunctionInfoState(SharedFunctionInfo sfi,
   HeapObject script_or_debug_info = sfi.script_or_debug_info(kAcquireLoad);
   switch (expectedState) {
     case SfiState::Compiled:
-      CHECK(
-          function_data.IsBytecodeArray() ||
-          (function_data.IsCodeT() &&
-           FromCodeT(CodeT::cast(function_data)).kind() == CodeKind::BASELINE));
+      CHECK(function_data.IsBytecodeArray() ||
+            (function_data.IsCodeT() &&
+             CodeT::cast(function_data).kind() == CodeKind::BASELINE));
       CHECK(script_or_debug_info.IsScript());
       break;
     case SfiState::DebugInfo:
-      CHECK(
-          function_data.IsBytecodeArray() ||
-          (function_data.IsCodeT() &&
-           FromCodeT(CodeT::cast(function_data)).kind() == CodeKind::BASELINE));
+      CHECK(function_data.IsBytecodeArray() ||
+            (function_data.IsCodeT() &&
+             CodeT::cast(function_data).kind() == CodeKind::BASELINE));
       CHECK(script_or_debug_info.IsDebugInfo());
       {
         DebugInfo debug_info = DebugInfo::cast(script_or_debug_info);
@@ -94,7 +92,6 @@ class BackgroundCompilationThread final : public v8::base::Thread {
 
 TEST(TestConcurrentSharedFunctionInfo) {
   FlagScope<bool> allow_natives_syntax(&i::FLAG_allow_natives_syntax, true);
-  FlagScope<bool> concurrent_inlining(&i::FLAG_concurrent_inlining, true);
 
   HandleAndZoneScope scope;
   Isolate* isolate = scope.main_isolate();

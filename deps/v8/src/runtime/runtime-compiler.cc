@@ -89,7 +89,7 @@ RUNTIME_FUNCTION(Runtime_InstallBaselineCode) {
   DCHECK(!function->HasOptimizationMarker());
   DCHECK(!function->has_feedback_vector());
   JSFunction::EnsureFeedbackVector(function, &is_compiled_scope);
-  Code baseline_code = sfi->baseline_code(kAcquireLoad);
+  CodeT baseline_code = sfi->baseline_code(kAcquireLoad);
   function->set_code(baseline_code);
   return baseline_code;
 }
@@ -294,7 +294,7 @@ BytecodeOffset DetermineEntryAndDisarmOSRForUnoptimized(
 }  // namespace
 
 RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
-  HandleScope scope(isolate);
+  HandleScope handle_scope(isolate);
   DCHECK_EQ(0, args.length());
 
   // Only reachable when OST is enabled.
@@ -310,7 +310,7 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
   BytecodeOffset osr_offset = DetermineEntryAndDisarmOSRForUnoptimized(frame);
   DCHECK(!osr_offset.IsNone());
 
-  MaybeHandle<Code> maybe_result;
+  MaybeHandle<CodeT> maybe_result;
   Handle<JSFunction> function(frame->function(), isolate);
   if (IsSuitableForOnStackReplacement(isolate, function)) {
     if (FLAG_trace_osr) {
@@ -324,7 +324,7 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
   }
 
   // Check whether we ended up with usable optimized code.
-  Handle<Code> result;
+  Handle<CodeT> result;
   if (maybe_result.ToHandle(&result) &&
       CodeKindIsOptimizedJSFunction(result->kind())) {
     DeoptimizationData data =

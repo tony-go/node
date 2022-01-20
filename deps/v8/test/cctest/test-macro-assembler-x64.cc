@@ -442,8 +442,7 @@ void TestSmiIndex(MacroAssembler* masm, Label* exit, int id, int x) {
 
 TEST(EmbeddedObj) {
 #ifdef V8_COMPRESS_POINTERS
-  FLAG_always_compact = true;
-  v8::V8::Initialize();
+  FLAG_compact_on_every_full_gc = true;
 
   Isolate* isolate = CcTest::i_isolate();
   HandleScope handles(isolate);
@@ -488,9 +487,6 @@ TEST(EmbeddedObj) {
     RelocInfo::Mode mode = it.rinfo()->rmode();
     if (RelocInfo::IsCompressedEmbeddedObject(mode)) {
       CHECK_EQ(*my_array, it.rinfo()->target_object(cage_base));
-      if (!V8_EXTERNAL_CODE_SPACE_BOOL) {
-        CHECK_EQ(*my_array, it.rinfo()->target_object(cage_base));
-      }
     } else {
       CHECK(RelocInfo::IsFullEmbeddedObject(mode));
       CHECK_EQ(*old_array, it.rinfo()->target_object(cage_base));
@@ -567,7 +563,7 @@ TEST(OperandOffset) {
   __ leaq(r13, Operand(rbp, -3 * kSystemPointerSize));
   __ leaq(rbx, Operand(rbp, -5 * kSystemPointerSize));
   __ movl(rcx, Immediate(2));
-  __ Move(r8, reinterpret_cast<Address>(&data[128]), RelocInfo::NONE);
+  __ Move(r8, reinterpret_cast<Address>(&data[128]), RelocInfo::NO_INFO);
   __ movl(rax, Immediate(1));
 
   Operand sp0 = Operand(rsp, 0);

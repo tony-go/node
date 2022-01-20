@@ -23,9 +23,9 @@ FuzzerSupport::FuzzerSupport(int* argc, char*** argv) {
   v8::V8::InitializeExternalStartupData((*argv)[0]);
   platform_ = v8::platform::NewDefaultPlatform();
   v8::V8::InitializePlatform(platform_.get());
-#ifdef V8_VIRTUAL_MEMORY_CAGE
-  if (!v8::V8::InitializeVirtualMemoryCage()) {
-    FATAL("Could not initialize the virtual memory cage");
+#ifdef V8_SANDBOX
+  if (!v8::V8::InitializeSandbox()) {
+    FATAL("Could not initialize the sandbox");
   }
 #endif
   v8::V8::Initialize();
@@ -62,7 +62,7 @@ FuzzerSupport::~FuzzerSupport() {
   allocator_ = nullptr;
 
   v8::V8::Dispose();
-  v8::V8::ShutdownPlatform();
+  v8::V8::DisposePlatform();
 }
 
 std::unique_ptr<FuzzerSupport> FuzzerSupport::fuzzer_support_;

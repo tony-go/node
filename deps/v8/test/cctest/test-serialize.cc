@@ -1217,7 +1217,7 @@ UNINITIALIZED_TEST(CustomSnapshotDataBlobOnOrOffHeapTypedArray) {
       i::Handle<i::JSArrayBuffer> buffer =
           GetBufferFromTypedArray(CompileRun("x"));
       // The resulting buffer should be on-heap.
-      CHECK_NULL(buffer->backing_store());
+      CHECK(buffer->IsEmpty());
       creator.SetDefaultContext(
           context, v8::SerializeInternalFieldsCallback(
                        SerializeInternalFields, reinterpret_cast<void*>(2016)));
@@ -1244,14 +1244,14 @@ UNINITIALIZED_TEST(CustomSnapshotDataBlobOnOrOffHeapTypedArray) {
     i::Handle<i::JSArrayBuffer> buffer =
         GetBufferFromTypedArray(CompileRun("x"));
     // The resulting buffer should be on-heap.
-    CHECK_NULL(buffer->backing_store());
+    CHECK(buffer->IsEmpty());
 
     buffer = GetBufferFromTypedArray(CompileRun("y"));
-    CHECK_NULL(buffer->backing_store());
+    CHECK(buffer->IsEmpty());
 
     buffer = GetBufferFromTypedArray(CompileRun("z"));
     // The resulting buffer should be off-heap.
-    CHECK_NOT_NULL(buffer->backing_store());
+    CHECK(!buffer->IsEmpty());
   }
   isolate->Dispose();
   delete[] blob.data;  // We can dispose of the snapshot blob now.
@@ -2037,7 +2037,7 @@ TEST(CodeSerializerLargeCodeObject) {
 
 TEST(CodeSerializerLargeCodeObjectWithIncrementalMarking) {
   if (!FLAG_incremental_marking) return;
-  if (FLAG_never_compact) return;
+  if (!FLAG_compact) return;
   ManualGCScope manual_gc_scope;
   FLAG_always_opt = false;
   const char* filter_flag = "--turbo-filter=NOTHING";

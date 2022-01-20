@@ -361,55 +361,73 @@ class InternalizedStringKey final : public StringTableKey {
     return string_->SlowEquals(string);
   }
 
-  Handle<String> AsHandle(Isolate* isolate) {
-    // Internalize the string in-place if possible.
-    MaybeHandle<Map> maybe_internalized_map;
-    StringInternalizationStrategy strategy =
+  void PrepareForInsertion(Isolate* isolate) {
+    StringTransitionStrategy strategy =
         isolate->factory()->ComputeInternalizationStrategyForString(
-            string_, &maybe_internalized_map);
+            string_, &maybe_internalized_map_);
     switch (strategy) {
-      case StringInternalizationStrategy::kCopy:
+      case StringTransitionStrategy::kCopy:
         break;
-      case StringInternalizationStrategy::kInPlace:
-        // A relaxed write is sufficient here even with concurrent
-        // internalization. Though it is not synchronizing, a thread that does
-        // not see the relaxed write will wait on the string table write
-        // mutex. When that thread acquires that mutex, the ordering of the
-        // mutex's underlying memory access will force this map update to become
-        // visible to it.
-        string_->set_map_no_write_barrier(
-            *maybe_internalized_map.ToHandleChecked());
-        DCHECK(string_->IsInternalizedString());
-        return string_;
-      case StringInternalizationStrategy::kAlreadyInternalized:
+      case StringTransitionStrategy::kInPlace:
+        // In-place transition will be done in GetHandleForInsertion, when we
+        // are sure that we are going to insert the string into the table.
+        return;
+      case StringTransitionStrategy::kAlreadyTransitioned:
         // We can see already internalized strings here only when sharing the
         // string table and allowing concurrent internalization.
         DCHECK(FLAG_shared_string_table);
-        return string_;
+        return;
     }
 
+    // Copying the string here is always threadsafe, as no instance type
+    // requiring a copy can transition any further.
+    StringShape shape(*string_);
     // External strings get special treatment, to avoid copying their
     // contents as long as they are not uncached.
-    StringShape shape(*string_);
     if (shape.IsExternalOneByte() && !shape.IsUncachedExternal()) {
       // TODO(syg): External strings not yet supported.
       DCHECK(!FLAG_shared_string_table);
-      return isolate->factory()
-          ->InternalizeExternalString<ExternalOneByteString>(string_);
+      string_ =
+          isolate->factory()->InternalizeExternalString<ExternalOneByteString>(
+              string_);
     } else if (shape.IsExternalTwoByte() && !shape.IsUncachedExternal()) {
       // TODO(syg): External strings not yet supported.
       DCHECK(!FLAG_shared_string_table);
-      return isolate->factory()
-          ->InternalizeExternalString<ExternalTwoByteString>(string_);
+      string_ =
+          isolate->factory()->InternalizeExternalString<ExternalTwoByteString>(
+              string_);
     } else {
       // Otherwise allocate a new internalized string.
-      return isolate->factory()->NewInternalizedStringImpl(
+      string_ = isolate->factory()->NewInternalizedStringImpl(
           string_, string_->length(), string_->raw_hash_field());
     }
   }
 
+  Handle<String> GetHandleForInsertion() {
+    Handle<Map> internalized_map;
+    // When preparing the string, the strategy was to in-place migrate it.
+    if (maybe_internalized_map_.ToHandle(&internalized_map)) {
+      // It is always safe to overwrite the map. The only transition possible
+      // is another thread migrated the string to internalized already.
+      // Migrations to thin are impossible, as we only call this method on table
+      // misses inside the critical section.
+      string_->set_map_no_write_barrier(*internalized_map);
+      DCHECK(string_->IsInternalizedString());
+      return string_;
+    }
+    // We prepared an internalized copy for the string or the string was already
+    // internalized.
+    // In theory we could have created a copy of a SeqString in young generation
+    // that has been promoted to old space by now. In that case we could
+    // in-place migrate the original string instead of internalizing the copy
+    // and migrating the original string to a ThinString. This scenario doesn't
+    // seem to be common enough to justify re-computing the strategy here.
+    return string_;
+  }
+
  private:
   Handle<String> string_;
+  MaybeHandle<Map> maybe_internalized_map_;
 };
 
 Handle<String> StringTable::LookupString(Isolate* isolate,
@@ -437,13 +455,11 @@ Handle<String> StringTable::LookupString(Isolate* isolate,
   //    correctly ordered by LookupKey's write mutex and see the updated map
   //    during the re-lookup.
   //
-  //    For lookup misses, the internalized string map is the same map in RO
-  //    space regardless of which thread is doing the lookup.
+  // For lookup misses, the internalized string map is the same map in RO space
+  // regardless of which thread is doing the lookup.
   //
-  //    For lookup hits, String::MakeThin is not threadsafe but is currently
-  //    only called on strings that are not accessible from multiple threads,
-  //    even if in the shared heap. TODO(v8:12007) Make String::MakeThin
-  //    threadsafe so old- generation flat strings can be shared across threads.
+  // For lookup hits, String::MakeThin is threadsafe and spinlocks on
+  // migrating into a ThinString.
 
   string = String::Flatten(isolate, string);
   if (string->IsInternalizedString()) return string;
@@ -454,6 +470,7 @@ Handle<String> StringTable::LookupString(Isolate* isolate,
   if (!string->IsInternalizedString()) {
     string->MakeThin(isolate, *result);
   }
+
   return result;
 }
 
@@ -495,29 +512,23 @@ Handle<String> StringTable::LookupKey(IsolateT* isolate, StringTableKey* key) {
 
   // Load the current string table data, in case another thread updates the
   // data while we're reading.
-  const Data* data = data_.load(std::memory_order_acquire);
+  const Data* current_data = data_.load(std::memory_order_acquire);
 
   // First try to find the string in the table. This is safe to do even if the
   // table is now reallocated; we won't find a stale entry in the old table
   // because the new table won't delete it's corresponding entry until the
   // string is dead, in which case it will die in this table too and worst
   // case we'll have a false miss.
-  InternalIndex entry = data->FindEntry(isolate, key, key->hash());
+  InternalIndex entry = current_data->FindEntry(isolate, key, key->hash());
   if (entry.is_found()) {
-    Handle<String> result(String::cast(data->Get(isolate, entry)), isolate);
+    Handle<String> result(String::cast(current_data->Get(isolate, entry)),
+                          isolate);
     DCHECK_IMPLIES(FLAG_shared_string_table, result->InSharedHeap());
     return result;
   }
 
   // No entry found, so adding new string.
-
-  // Allocate the string before the first insertion attempt, reuse this
-  // allocated value on insertion retries. If another thread concurrently
-  // allocates the same string, the insert will fail, the lookup above will
-  // succeed, and this string will be discarded.
-  Handle<String> new_string = key->AsHandle(isolate);
-  DCHECK_IMPLIES(FLAG_shared_string_table, new_string->InSharedHeap());
-
+  key->PrepareForInsertion(isolate);
   {
     base::MutexGuard table_write_guard(&write_mutex_);
 
@@ -531,12 +542,16 @@ Handle<String> StringTable::LookupKey(IsolateT* isolate, StringTableKey* key) {
     if (element == empty_element()) {
       // This entry is empty, so write it and register that we added an
       // element.
+      Handle<String> new_string = key->GetHandleForInsertion();
+      DCHECK_IMPLIES(FLAG_shared_string_table, new_string->IsShared());
       data->Set(entry, *new_string);
       data->ElementAdded();
       return new_string;
     } else if (element == deleted_element()) {
       // This entry was deleted, so overwrite it and register that we
       // overwrote a deleted element.
+      Handle<String> new_string = key->GetHandleForInsertion();
+      DCHECK_IMPLIES(FLAG_shared_string_table, new_string->IsShared());
       data->Set(entry, *new_string);
       data->DeletedElementOverwritten();
       return new_string;
@@ -663,7 +678,15 @@ Address StringTable::Data::TryStringToIndexOrLookupExisting(Isolate* isolate,
   }
 
   String internalized = String::cast(string_table_data->Get(isolate, entry));
-  string.MakeThin(isolate, internalized);
+  // string can be internalized here, if another thread internalized it.
+  // If we found and entry in the string table and string is not internalized,
+  // there is no way that it can transition to internalized later on. So a last
+  // check here is sufficient.
+  if (!string.IsInternalizedString()) {
+    string.MakeThin(isolate, internalized);
+  } else {
+    DCHECK(FLAG_shared_string_table);
+  }
   return internalized.ptr();
 }
 
@@ -671,7 +694,12 @@ Address StringTable::Data::TryStringToIndexOrLookupExisting(Isolate* isolate,
 Address StringTable::TryStringToIndexOrLookupExisting(Isolate* isolate,
                                                       Address raw_string) {
   String string = String::cast(Object(raw_string));
-  DCHECK(!string.IsInternalizedString());
+  if (string.IsInternalizedString()) {
+    // string could be internalized, if the string table is shared and another
+    // thread internalized it.
+    DCHECK(FLAG_shared_string_table);
+    return raw_string;
+  }
 
   // Valid array indices are >= 0, so they cannot be mixed up with any of
   // the result sentinels, which are negative.

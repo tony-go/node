@@ -11,6 +11,7 @@
 namespace v8 {
 
 class ApiFunction;
+class CFunctionInfo;
 
 namespace internal {
 
@@ -24,7 +25,7 @@ class StatsCounter;
 
 #define EXTERNAL_REFERENCE_LIST_WITH_ISOLATE(V)                                \
   V(isolate_address, "isolate")                                                \
-  V(builtins_address, "builtins")                                              \
+  V(builtins_table, "builtins_table")                                          \
   V(handle_scope_implementer_address,                                          \
     "Isolate::handle_scope_implementer_address")                               \
   V(address_of_interpreter_entry_trampoline_instruction_start,                 \
@@ -78,16 +79,16 @@ class StatsCounter;
   V(thread_in_wasm_flag_address_address,                                       \
     "Isolate::thread_in_wasm_flag_address_address")                            \
   V(javascript_execution_assert, "javascript_execution_assert")                \
-  EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_HEAP_SANDBOX(V)
+  EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_SANDBOXED_EXTERNAL_POINTERS(V)
 
-#ifdef V8_HEAP_SANDBOX
-#define EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_HEAP_SANDBOX(V) \
-  V(external_pointer_table_address,                          \
-    "Isolate::external_pointer_table_address("               \
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
+#define EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_SANDBOXED_EXTERNAL_POINTERS(V) \
+  V(external_pointer_table_address,                                         \
+    "Isolate::external_pointer_table_address("                              \
     ")")
 #else
-#define EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_HEAP_SANDBOX(V)
-#endif  // V8_HEAP_SANDBOX
+#define EXTERNAL_REFERENCE_LIST_WITH_ISOLATE_SANDBOXED_EXTERNAL_POINTERS(V)
+#endif  // V8_SANDBOXED_EXTERNAL_POINTERS
 
 #define EXTERNAL_REFERENCE_LIST(V)                                             \
   V(abort_with_reason, "abort_with_reason")                                    \
@@ -126,6 +127,7 @@ class StatsCounter;
   V(f64_mod_wrapper_function, "f64_mod_wrapper")                               \
   V(get_date_field_function, "JSDate::GetField")                               \
   V(get_or_create_hash_raw, "get_or_create_hash_raw")                          \
+  V(gsab_byte_length, "GsabByteLength")                                        \
   V(ieee754_acos_function, "base::ieee754::acos")                              \
   V(ieee754_acosh_function, "base::ieee754::acosh")                            \
   V(ieee754_asin_function, "base::ieee754::asin")                              \
@@ -155,8 +157,6 @@ class StatsCounter;
   V(jsarray_array_join_concat_to_sequential_string,                            \
     "jsarray_array_join_concat_to_sequential_string")                          \
   V(jsreceiver_create_identity_hash, "jsreceiver_create_identity_hash")        \
-  V(length_tracking_gsab_backed_typed_array_length,                            \
-    "LengthTrackingGsabBackedTypedArrayLength")                                \
   V(libc_memchr_function, "libc_memchr")                                       \
   V(libc_memcpy_function, "libc_memcpy")                                       \
   V(libc_memmove_function, "libc_memmove")                                     \
@@ -249,6 +249,7 @@ class StatsCounter;
   V(address_of_wasm_int32_max_as_double, "wasm_int32_max_as_double")           \
   V(address_of_wasm_uint32_max_as_double, "wasm_uint32_max_as_double")         \
   V(address_of_wasm_int32_overflow_as_float, "wasm_int32_overflow_as_float")   \
+  V(supports_cetss_address, "CpuFeatures::supports_cetss_address")             \
   V(write_barrier_marking_from_code_function, "WriteBarrier::MarkingFromCode") \
   V(call_enqueue_microtask_function, "MicrotaskQueue::CallEnqueueMicrotask")   \
   V(call_enter_context_function, "call_enter_context_function")                \
@@ -298,31 +299,34 @@ class StatsCounter;
   V(re_experimental_match_for_call_from_js,                                    \
     "ExperimentalRegExp::MatchForCallFromJs")                                  \
   EXTERNAL_REFERENCE_LIST_INTL(V)                                              \
-  EXTERNAL_REFERENCE_LIST_VIRTUAL_MEMORY_CAGE(V)                               \
-  EXTERNAL_REFERENCE_LIST_HEAP_SANDBOX(V)
+  EXTERNAL_REFERENCE_LIST_SANDBOX(V)                                           \
+  EXTERNAL_REFERENCE_LIST_SANDBOXED_EXTERNAL_POINTERS(V)
 #ifdef V8_INTL_SUPPORT
 #define EXTERNAL_REFERENCE_LIST_INTL(V)                               \
   V(intl_convert_one_byte_to_lower, "intl_convert_one_byte_to_lower") \
-  V(intl_to_latin1_lower_table, "intl_to_latin1_lower_table")
+  V(intl_to_latin1_lower_table, "intl_to_latin1_lower_table")         \
+  V(intl_ascii_collation_weights_l1, "Intl::AsciiCollationWeightsL1") \
+  V(intl_ascii_collation_weights_l3, "Intl::AsciiCollationWeightsL3")
 #else
 #define EXTERNAL_REFERENCE_LIST_INTL(V)
 #endif  // V8_INTL_SUPPORT
 
-#ifdef V8_VIRTUAL_MEMORY_CAGE
-#define EXTERNAL_REFERENCE_LIST_VIRTUAL_MEMORY_CAGE(V)               \
-  V(virtual_memory_cage_base_address, "V8VirtualMemoryCage::base()") \
-  V(virtual_memory_cage_end_address, "V8VirtualMemoryCage::end()")
+#ifdef V8_SANDBOXED_POINTERS
+#define EXTERNAL_REFERENCE_LIST_SANDBOX(V)   \
+  V(sandbox_base_address, "Sandbox::base()") \
+  V(sandbox_end_address, "Sandbox::end()")   \
+  V(empty_backing_store_buffer, "EmptyBackingStoreBuffer()")
 #else
-#define EXTERNAL_REFERENCE_LIST_VIRTUAL_MEMORY_CAGE(V)
-#endif  // V8_VIRTUAL_MEMORY_CAGE
+#define EXTERNAL_REFERENCE_LIST_SANDBOX(V)
+#endif  // V8_SANDBOXED_POINTERS
 
-#ifdef V8_HEAP_SANDBOX
-#define EXTERNAL_REFERENCE_LIST_HEAP_SANDBOX(V) \
-  V(external_pointer_table_grow_table_function, \
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
+#define EXTERNAL_REFERENCE_LIST_SANDBOXED_EXTERNAL_POINTERS(V) \
+  V(external_pointer_table_grow_table_function,                \
     "ExternalPointerTable::GrowTable")
 #else
-#define EXTERNAL_REFERENCE_LIST_HEAP_SANDBOX(V)
-#endif  // V8_HEAP_SANDBOX
+#define EXTERNAL_REFERENCE_LIST_SANDBOXED_EXTERNAL_POINTERS(V)
+#endif  // V8_SANDBOXED_EXTERNAL_POINTERS
 
 // An ExternalReference represents a C++ address used in the generated
 // code. All references to C++ functions and variables must be encapsulated
@@ -398,6 +402,15 @@ class ExternalReference {
   static ExternalReference Create(StatsCounter* counter);
   static V8_EXPORT_PRIVATE ExternalReference Create(ApiFunction* ptr,
                                                     Type type);
+  // The following version is used by JSCallReducer in the compiler
+  // to create a reference for a fast API call, with one or more
+  // overloads. In simulator builds, it additionally "registers"
+  // the overloads with the simulator to ensure it maintains a
+  // mapping of callable Address'es to a function signature, encoding
+  // GP and FP arguments.
+  static V8_EXPORT_PRIVATE ExternalReference
+  Create(Isolate* isolate, ApiFunction* ptr, Type type, Address* c_functions,
+         const CFunctionInfo* const* c_signatures, unsigned num_functions);
   static ExternalReference Create(const Runtime::Function* f);
   static ExternalReference Create(IsolateAddressId id, Isolate* isolate);
   static ExternalReference Create(Runtime::FunctionId id);

@@ -355,7 +355,7 @@ uint32_t WasmModuleBuilder::AddTable(ValueType type, uint32_t min_size,
 
 uint32_t WasmModuleBuilder::AddTable(ValueType type, uint32_t min_size,
                                      uint32_t max_size, WasmInitExpr init) {
-  tables_.push_back({type, min_size, max_size, true, std::move(init)});
+  tables_.push_back({type, min_size, max_size, true, init});
   return static_cast<uint32_t>(tables_.size() - 1);
 }
 
@@ -403,7 +403,7 @@ void WasmModuleBuilder::AddExport(base::Vector<const char> name,
 uint32_t WasmModuleBuilder::AddExportedGlobal(ValueType type, bool mutability,
                                               WasmInitExpr init,
                                               base::Vector<const char> name) {
-  uint32_t index = AddGlobal(type, mutability, std::move(init));
+  uint32_t index = AddGlobal(type, mutability, init);
   AddExport(name, kExternalGlobal, index);
   return index;
 }
@@ -421,7 +421,7 @@ void WasmModuleBuilder::ExportImportedFunction(base::Vector<const char> name,
 
 uint32_t WasmModuleBuilder::AddGlobal(ValueType type, bool mutability,
                                       WasmInitExpr init) {
-  globals_.push_back({type, mutability, std::move(init)});
+  globals_.push_back({type, mutability, init});
   return static_cast<uint32_t>(globals_.size() - 1);
 }
 
@@ -523,7 +523,7 @@ void WriteInitializerExpressionWithEnd(ZoneBuffer* buffer,
       STATIC_ASSERT((kExprStructNewWithRtt >> 8) == kGCPrefix);
       STATIC_ASSERT((kExprStructNewDefault >> 8) == kGCPrefix);
       STATIC_ASSERT((kExprStructNewDefaultWithRtt >> 8) == kGCPrefix);
-      for (const WasmInitExpr& operand : init.operands()) {
+      for (const WasmInitExpr& operand : *init.operands()) {
         WriteInitializerExpressionWithEnd(buffer, operand, kWasmBottom);
       }
       buffer->write_u8(kGCPrefix);
@@ -551,7 +551,7 @@ void WriteInitializerExpressionWithEnd(ZoneBuffer* buffer,
     case WasmInitExpr::kArrayInitStatic:
       STATIC_ASSERT((kExprArrayInit >> 8) == kGCPrefix);
       STATIC_ASSERT((kExprArrayInitStatic >> 8) == kGCPrefix);
-      for (const WasmInitExpr& operand : init.operands()) {
+      for (const WasmInitExpr& operand : *init.operands()) {
         WriteInitializerExpressionWithEnd(buffer, operand, kWasmBottom);
       }
       buffer->write_u8(kGCPrefix);
@@ -559,7 +559,7 @@ void WriteInitializerExpressionWithEnd(ZoneBuffer* buffer,
           init.kind() == WasmInitExpr::kArrayInit ? kExprArrayInit
                                                   : kExprArrayInitStatic));
       buffer->write_u32v(init.immediate().index);
-      buffer->write_u32v(static_cast<uint32_t>(init.operands().size() - 1));
+      buffer->write_u32v(static_cast<uint32_t>(init.operands()->size() - 1));
       break;
     case WasmInitExpr::kRttCanon:
       STATIC_ASSERT((kExprRttCanon >> 8) == kGCPrefix);
@@ -570,7 +570,7 @@ void WriteInitializerExpressionWithEnd(ZoneBuffer* buffer,
     case WasmInitExpr::kRttSub:
     case WasmInitExpr::kRttFreshSub:
       // The operand to rtt.sub must be emitted first.
-      WriteInitializerExpressionWithEnd(buffer, init.operands()[0],
+      WriteInitializerExpressionWithEnd(buffer, (*init.operands())[0],
                                         kWasmBottom);
       STATIC_ASSERT((kExprRttSub >> 8) == kGCPrefix);
       STATIC_ASSERT((kExprRttFreshSub >> 8) == kGCPrefix);
@@ -785,59 +785,40 @@ void WasmModuleBuilder::WriteTo(ZoneBuffer* buffer) const {
     buffer->write_size(element_segments_.size());
     for (const WasmElemSegment& segment : element_segments_) {
       bool is_active = segment.status == WasmElemSegment::kStatusActive;
-      // If this segment is expressible in the backwards-compatible syntax
-      // (before reftypes proposal), we should emit it in that syntax.
-      // This is the case if the segment is active and all entries are function
-      // references. Note that this is currently the only path that allows
-      // kRelativeToImports function indexing mode.
-      // TODO(manoskouk): Remove this logic once reftypes has shipped.
-      bool backwards_compatible =
-          is_active && segment.table_index == 0 &&
-          std::all_of(
-              segment.entries.begin(), segment.entries.end(), [](auto& entry) {
-                return entry.kind ==
-                       WasmModuleBuilder::WasmElemSegment::Entry::kRefFuncEntry;
-              });
-      if (backwards_compatible) {
-        buffer->write_u8(0);
+      // We pick the most general syntax, i.e., we always explicitly emit the
+      // table index and the type, and use the expressions-as-elements syntax.
+      // The initial byte is one of 0x05, 0x06, and 0x07.
+      uint8_t kind_mask =
+          segment.status == WasmElemSegment::kStatusActive
+              ? 0b10
+              : segment.status == WasmElemSegment::kStatusDeclarative ? 0b11
+                                                                      : 0b01;
+      uint8_t expressions_as_elements_mask = 0b100;
+      buffer->write_u8(kind_mask | expressions_as_elements_mask);
+      if (is_active) {
+        buffer->write_u32v(segment.table_index);
         WriteInitializerExpression(buffer, segment.offset, segment.type);
-        buffer->write_size(segment.entries.size());
-        for (const WasmElemSegment::Entry entry : segment.entries) {
-          buffer->write_u32v(
-              segment.indexing_mode == WasmElemSegment::kRelativeToImports
-                  ? entry.index
-                  : entry.index +
-                        static_cast<uint32_t>(function_imports_.size()));
-        }
-      } else {
-        DCHECK_EQ(segment.indexing_mode, WasmElemSegment::kRelativeToImports);
-        // If we pick the general syntax, we always explicitly emit the table
-        // index and the type, and use the expressions-as-elements syntax. I.e.
-        // the initial byte is one of 0x05, 0x06, and 0x07.
-        uint8_t kind_mask =
-            segment.status == WasmElemSegment::kStatusActive
-                ? 0b10
-                : segment.status == WasmElemSegment::kStatusDeclarative ? 0b11
-                                                                        : 0b01;
-        uint8_t expressions_as_elements_mask = 0b100;
-        buffer->write_u8(kind_mask | expressions_as_elements_mask);
-        if (is_active) {
-          buffer->write_u32v(segment.table_index);
-          WriteInitializerExpression(buffer, segment.offset, segment.type);
-        }
-        WriteValueType(buffer, segment.type);
-        buffer->write_size(segment.entries.size());
-        for (const WasmElemSegment::Entry entry : segment.entries) {
-          uint8_t opcode =
-              entry.kind == WasmElemSegment::Entry::kGlobalGetEntry
-                  ? kExprGlobalGet
-                  : entry.kind == WasmElemSegment::Entry::kRefFuncEntry
-                        ? kExprRefFunc
-                        : kExprRefNull;
-          buffer->write_u8(opcode);
-          buffer->write_u32v(entry.index);
-          buffer->write_u8(kExprEnd);
-        }
+      }
+      WriteValueType(buffer, segment.type);
+      buffer->write_size(segment.entries.size());
+      for (const WasmElemSegment::Entry entry : segment.entries) {
+        uint8_t opcode =
+            entry.kind == WasmElemSegment::Entry::kGlobalGetEntry
+                ? kExprGlobalGet
+                : entry.kind == WasmElemSegment::Entry::kRefFuncEntry
+                      ? kExprRefFunc
+                      : kExprRefNull;
+        bool needs_function_offset =
+            segment.indexing_mode ==
+                WasmElemSegment::kRelativeToDeclaredFunctions &&
+            entry.kind == WasmElemSegment::Entry::kRefFuncEntry;
+        uint32_t index =
+            entry.index + (needs_function_offset
+                               ? static_cast<uint32_t>(function_imports_.size())
+                               : 0);
+        buffer->write_u8(opcode);
+        buffer->write_u32v(index);
+        buffer->write_u8(kExprEnd);
       }
     }
     FixupSection(buffer, start);

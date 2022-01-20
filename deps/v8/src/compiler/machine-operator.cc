@@ -667,7 +667,7 @@ std::ostream& operator<<(std::ostream& os, TruncateKind kind) {
   V(MapInHeader)             \
   V(AnyTagged)               \
   V(CompressedPointer)       \
-  V(CagedPointer)            \
+  V(SandboxedPointer)        \
   V(AnyCompressed)
 
 #define MACHINE_REPRESENTATION_LIST(V) \
@@ -683,7 +683,7 @@ std::ostream& operator<<(std::ostream& os, TruncateKind kind) {
   V(kTaggedPointer)                    \
   V(kTagged)                           \
   V(kCompressedPointer)                \
-  V(kCagedPointer)                     \
+  V(kSandboxedPointer)                 \
   V(kCompressed)
 
 #define LOAD_TRANSFORM_LIST(V) \
@@ -1046,7 +1046,7 @@ struct MachineOperatorGlobalCache {
         : Operator1<StoreRepresentation>(                                  \
               IrOpcode::kProtectedStore,                                   \
               Operator::kNoDeopt | Operator::kNoRead | Operator::kNoThrow, \
-              "Store", 3, 1, 1, 0, 1, 0,                                   \
+              "ProtectedStore", 3, 1, 1, 0, 1, 0,                          \
               StoreRepresentation(MachineRepresentation::Type,             \
                                   kNoWriteBarrier)) {}                     \
   };                                                                       \

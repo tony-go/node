@@ -57,6 +57,15 @@ struct InvokeParams {
     return function->shared().is_script();
   }
 
+  Handle<FixedArray> GetAndResetHostDefinedOptions() {
+    DCHECK(IsScript());
+    DCHECK_EQ(argc, 1);
+    auto options = Handle<FixedArray>::cast(argv[0]);
+    argv = nullptr;
+    argc = 0;
+    return options;
+  }
+
   Handle<Object> target;
   Handle<Object> receiver;
   int argc;
@@ -160,8 +169,8 @@ InvokeParams InvokeParams::SetUpForRunMicrotasks(
   return params;
 }
 
-Handle<Code> JSEntry(Isolate* isolate, Execution::Target execution_target,
-                     bool is_construct) {
+Handle<CodeT> JSEntry(Isolate* isolate, Execution::Target execution_target,
+                      bool is_construct) {
   if (is_construct) {
     DCHECK_EQ(Execution::Target::kCallable, execution_target);
     return BUILTIN_CODE(isolate, JSConstructEntry);
@@ -198,9 +207,9 @@ MaybeHandle<Context> NewScriptContext(Isolate* isolate,
       native_context->script_context_table(), isolate);
 
   // Find name clashes.
-  for (int var = 0; var < scope_info->ContextLocalCount(); var++) {
-    Handle<String> name(scope_info->ContextLocalName(var), isolate);
-    VariableMode mode = scope_info->ContextLocalMode(var);
+  for (auto it : ScopeInfo::IterateLocalNames(scope_info)) {
+    Handle<String> name(it->name(), isolate);
+    VariableMode mode = scope_info->ContextLocalMode(it->index());
     VariableLookupResult lookup;
     if (ScriptContextTable::Lookup(isolate, *script_context, *name, &lookup)) {
       if (IsLexicalVariableMode(mode) || IsLexicalVariableMode(lookup.mode)) {
@@ -330,10 +339,9 @@ V8_WARN_UNUSED_RESULT MaybeHandle<Object> Invoke(Isolate* isolate,
 #endif
     // Set up a ScriptContext when running scripts that need it.
     if (function->shared().needs_script_context()) {
-      DCHECK_EQ(params.argc, 1);
       Handle<Context> context;
       Handle<FixedArray> host_defined_options =
-          Handle<FixedArray>::cast(params.argv[0]);
+          const_cast<InvokeParams&>(params).GetAndResetHostDefinedOptions();
       if (!NewScriptContext(isolate, function, host_defined_options)
                .ToHandle(&context)) {
         if (params.message_handling == Execution::MessageHandling::kReport) {
@@ -382,7 +390,7 @@ V8_WARN_UNUSED_RESULT MaybeHandle<Object> Invoke(Isolate* isolate,
 
   // Placeholder for return value.
   Object value;
-  Handle<Code> code =
+  Handle<CodeT> code =
       JSEntry(isolate, params.execution_target, params.is_construct);
   {
     // Save and restore context around invocation and block the
@@ -511,14 +519,15 @@ MaybeHandle<Object> Execution::Call(Isolate* isolate, Handle<Object> callable,
 }
 
 // static
-MaybeHandle<Object> Execution::CallScript(
-    Isolate* isolate, Handle<JSFunction> script_function,
-    Handle<Object> receiver, Handle<FixedArray> host_defined_options) {
+MaybeHandle<Object> Execution::CallScript(Isolate* isolate,
+                                          Handle<JSFunction> script_function,
+                                          Handle<Object> receiver,
+                                          Handle<Object> host_defined_options) {
   DCHECK(script_function->shared().is_script());
   DCHECK(receiver->IsJSGlobalProxy() || receiver->IsJSGlobalObject());
-  Handle<Object> argument = host_defined_options;
-  return Invoke(isolate, InvokeParams::SetUpForCall(isolate, script_function,
-                                                    receiver, 1, &argument));
+  return Invoke(
+      isolate, InvokeParams::SetUpForCall(isolate, script_function, receiver, 1,
+                                          &host_defined_options));
 }
 
 MaybeHandle<Object> Execution::CallBuiltin(Isolate* isolate,

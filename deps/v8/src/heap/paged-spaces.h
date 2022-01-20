@@ -86,7 +86,7 @@ class V8_EXPORT_PRIVATE PagedSpace
   // Creates a space with an id.
   PagedSpace(
       Heap* heap, AllocationSpace id, Executability executable,
-      FreeList* free_list,
+      FreeList* free_list, LinearAllocationArea* allocation_info_,
       CompactionSpaceKind compaction_space_kind = CompactionSpaceKind::kNone);
 
   ~PagedSpace() override { TearDown(); }
@@ -216,7 +216,7 @@ class V8_EXPORT_PRIVATE PagedSpace
 
   void RefineAllocatedBytesAfterSweeping(Page* page);
 
-  Page* InitializePage(MemoryChunk* chunk);
+  Page* InitializePage(MemoryChunk* chunk) override;
 
   void ReleasePage(Page* page);
 
@@ -289,9 +289,11 @@ class V8_EXPORT_PRIVATE PagedSpace
   inline void UnlinkFreeListCategories(Page* page);
   inline size_t RelinkFreeListCategories(Page* page);
 
-  Page* first_page() { return reinterpret_cast<Page*>(Space::first_page()); }
-  const Page* first_page() const {
-    return reinterpret_cast<const Page*>(Space::first_page());
+  Page* first_page() override {
+    return reinterpret_cast<Page*>(memory_chunk_list_.front());
+  }
+  const Page* first_page() const override {
+    return reinterpret_cast<const Page*>(memory_chunk_list_.front());
   }
 
   iterator begin() { return iterator(first_page()); }
@@ -356,6 +358,10 @@ class V8_EXPORT_PRIVATE PagedSpace
   virtual bool snapshotable() { return true; }
 
   bool HasPages() { return first_page() != nullptr; }
+
+  // Returns whether sweeping of this space is safe on this thread. Code space
+  // sweeping is only allowed on the main thread.
+  bool IsSweepingAllowedOnThread(LocalHeap* local_heap);
 
   // Cleans up the space, frees all pages in this space except those belonging
   // to the initial chunk, uncommits addresses in the initial chunk.
@@ -453,11 +459,14 @@ class V8_EXPORT_PRIVATE CompactionSpace : public PagedSpace {
   CompactionSpace(Heap* heap, AllocationSpace id, Executability executable,
                   CompactionSpaceKind compaction_space_kind)
       : PagedSpace(heap, id, executable, FreeList::CreateFreeList(),
-                   compaction_space_kind) {
+                   &allocation_info_, compaction_space_kind) {
     DCHECK(is_compaction_space());
   }
 
   const std::vector<Page*>& GetNewPages() { return new_pages_; }
+
+ private:
+  LinearAllocationArea allocation_info_;
 
  protected:
   V8_WARN_UNUSED_RESULT bool RefillLabMain(int size_in_bytes,
@@ -505,9 +514,9 @@ class OldSpace : public PagedSpace {
  public:
   // Creates an old space object. The constructor does not allocate pages
   // from OS.
-  explicit OldSpace(Heap* heap)
-      : PagedSpace(heap, OLD_SPACE, NOT_EXECUTABLE,
-                   FreeList::CreateFreeList()) {}
+  explicit OldSpace(Heap* heap, LinearAllocationArea* allocation_info)
+      : PagedSpace(heap, OLD_SPACE, NOT_EXECUTABLE, FreeList::CreateFreeList(),
+                   allocation_info) {}
 
   static bool IsAtPageStart(Address addr) {
     return static_cast<intptr_t>(addr & kPageAlignmentMask) ==
@@ -529,7 +538,11 @@ class CodeSpace : public PagedSpace {
   // Creates an old space object. The constructor does not allocate pages
   // from OS.
   explicit CodeSpace(Heap* heap)
-      : PagedSpace(heap, CODE_SPACE, EXECUTABLE, FreeList::CreateFreeList()) {}
+      : PagedSpace(heap, CODE_SPACE, EXECUTABLE, FreeList::CreateFreeList(),
+                   &paged_allocation_info_) {}
+
+ private:
+  LinearAllocationArea paged_allocation_info_;
 };
 
 // -----------------------------------------------------------------------------
@@ -539,8 +552,8 @@ class MapSpace : public PagedSpace {
  public:
   // Creates a map space object.
   explicit MapSpace(Heap* heap)
-      : PagedSpace(heap, MAP_SPACE, NOT_EXECUTABLE,
-                   FreeList::CreateFreeList()) {}
+      : PagedSpace(heap, MAP_SPACE, NOT_EXECUTABLE, FreeList::CreateFreeList(),
+                   &paged_allocation_info_) {}
 
   int RoundSizeDownToObjectAlignment(int size) override {
     if (base::bits::IsPowerOfTwo(Map::kSize)) {
@@ -555,6 +568,9 @@ class MapSpace : public PagedSpace {
 #ifdef VERIFY_HEAP
   void VerifyObject(HeapObject obj) override;
 #endif
+
+ private:
+  LinearAllocationArea paged_allocation_info_;
 };
 
 // Iterates over the chunks (pages and large object pages) that can contain

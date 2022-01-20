@@ -30,6 +30,9 @@ namespace internal {
 namespace wasm {
 
 namespace {
+constexpr uint8_t kLazyFunction = 2;
+constexpr uint8_t kLiftoffFunction = 3;
+constexpr uint8_t kTurboFanFunction = 4;
 
 // TODO(bbudge) Try to unify the various implementations of readers and writers
 // in Wasm, e.g. StreamProcessor and ZoneBuffer, with these.
@@ -189,17 +192,17 @@ uint32_t GetWasmCalleeTag(RelocInfo* rinfo) {
 
 constexpr size_t kHeaderSize = sizeof(size_t);  // total code size
 
-constexpr size_t kCodeHeaderSize = sizeof(bool) +  // whether code is present
-                                   sizeof(int) +   // offset of constant pool
-                                   sizeof(int) +   // offset of safepoint table
-                                   sizeof(int) +   // offset of handler table
-                                   sizeof(int) +   // offset of code comments
-                                   sizeof(int) +   // unpadded binary size
-                                   sizeof(int) +   // stack slots
-                                   sizeof(int) +   // tagged parameter slots
-                                   sizeof(int) +   // code size
-                                   sizeof(int) +   // reloc size
-                                   sizeof(int) +   // source positions size
+constexpr size_t kCodeHeaderSize = sizeof(uint8_t) +  // code kind
+                                   sizeof(int) +      // offset of constant pool
+                                   sizeof(int) +  // offset of safepoint table
+                                   sizeof(int) +  // offset of handler table
+                                   sizeof(int) +  // offset of code comments
+                                   sizeof(int) +  // unpadded binary size
+                                   sizeof(int) +  // stack slots
+                                   sizeof(int) +  // tagged parameter slots
+                                   sizeof(int) +  // code size
+                                   sizeof(int) +  // reloc size
+                                   sizeof(int) +  // source positions size
                                    sizeof(int) +  // protected instructions size
                                    sizeof(WasmCode::Kind) +  // code kind
                                    sizeof(ExecutionTier);    // tier
@@ -291,6 +294,7 @@ class V8_EXPORT_PRIVATE NativeModuleSerializer {
   const base::Vector<WasmCode* const> code_table_;
   bool write_called_ = false;
   size_t total_written_code_ = 0;
+  int num_turbofan_functions_ = 0;
 };
 
 NativeModuleSerializer::NativeModuleSerializer(
@@ -302,10 +306,10 @@ NativeModuleSerializer::NativeModuleSerializer(
 }
 
 size_t NativeModuleSerializer::MeasureCode(const WasmCode* code) const {
-  if (code == nullptr) return sizeof(bool);
+  if (code == nullptr) return sizeof(uint8_t);
   DCHECK_EQ(WasmCode::kWasmFunction, code->kind());
   if (code->tier() != ExecutionTier::kTurbofan) {
-    return sizeof(bool);
+    return sizeof(uint8_t);
   }
   return kCodeHeaderSize + code->instructions().size() +
          code->reloc_info().size() + code->source_positions().size() +
@@ -329,19 +333,30 @@ void NativeModuleSerializer::WriteHeader(Writer* writer,
 }
 
 bool NativeModuleSerializer::WriteCode(const WasmCode* code, Writer* writer) {
-  DCHECK_IMPLIES(!FLAG_wasm_lazy_compilation, code != nullptr);
   if (code == nullptr) {
-    writer->Write(false);
+    writer->Write(kLazyFunction);
     return true;
   }
   DCHECK_EQ(WasmCode::kWasmFunction, code->kind());
   // Only serialize TurboFan code, as Liftoff code can contain breakpoints or
   // non-relocatable constants.
   if (code->tier() != ExecutionTier::kTurbofan) {
-    writer->Write(false);
+    // We check if the function has been executed already. If so, we serialize
+    // it as {kLiftoffFunction} so that upon deserialization the function will
+    // get compiled with Liftoff eagerly. If the function has not been executed
+    // yet, we serialize it as {kLazyFunction}, and the function will not get
+    // compiled upon deserialization.
+    NativeModule* native_module = code->native_module();
+    uint32_t budget =
+        native_module->tiering_budget_array()[declared_function_index(
+            native_module->module(), code->index())];
+    writer->Write(budget == static_cast<uint32_t>(FLAG_wasm_tiering_budget)
+                      ? kLazyFunction
+                      : kLiftoffFunction);
     return true;
   }
-  writer->Write(true);
+  ++num_turbofan_functions_;
+  writer->Write(kTurboFanFunction);
   // Write the size of the entire code section, followed by the code header.
   writer->Write(code->constant_pool_offset());
   writer->Write(code->safepoint_table_offset());
@@ -449,6 +464,8 @@ bool NativeModuleSerializer::Write(Writer* writer) {
   for (WasmCode* code : code_table_) {
     if (!WriteCode(code, writer)) return false;
   }
+  // If not a single function was written, serialization was not successful.
+  if (num_turbofan_functions_ == 0) return false;
 
   // Make sure that the serialized total code size was correct.
   CHECK_EQ(total_written_code_, total_code_size);
@@ -533,8 +550,12 @@ class V8_EXPORT_PRIVATE NativeModuleDeserializer {
 
   bool Read(Reader* reader);
 
-  base::Vector<const int> missing_functions() {
-    return base::VectorOf(missing_functions_);
+  base::Vector<const int> lazy_functions() {
+    return base::VectorOf(lazy_functions_);
+  }
+
+  base::Vector<const int> liftoff_functions() {
+    return base::VectorOf(liftoff_functions_);
   }
 
  private:
@@ -555,7 +576,8 @@ class V8_EXPORT_PRIVATE NativeModuleDeserializer {
   size_t remaining_code_size_ = 0;
   base::Vector<byte> current_code_space_;
   NativeModule::JumpTablesRef current_jump_tables_;
-  std::vector<int> missing_functions_;
+  std::vector<int> lazy_functions_;
+  std::vector<int> liftoff_functions_;
 };
 
 class CopyAndRelocTask : public JobTask {
@@ -688,11 +710,16 @@ void NativeModuleDeserializer::ReadHeader(Reader* reader) {
 
 DeserializationUnit NativeModuleDeserializer::ReadCode(int fn_index,
                                                        Reader* reader) {
-  bool has_code = reader->Read<bool>();
-  if (!has_code) {
-    missing_functions_.push_back(fn_index);
+  uint8_t code_kind = reader->Read<uint8_t>();
+  if (code_kind == kLazyFunction) {
+    lazy_functions_.push_back(fn_index);
     return {};
   }
+  if (code_kind == kLiftoffFunction) {
+    liftoff_functions_.push_back(fn_index);
+    return {};
+  }
+
   int constant_pool_offset = reader->Read<int>();
   int safepoint_table_offset = reader->Read<int>();
   int handler_table_offset = reader->Read<int>();
@@ -869,7 +896,7 @@ MaybeHandle<WasmModuleObject> DeserializeNativeModule(
       return {};
     }
     shared_native_module->compilation_state()->InitializeAfterDeserialization(
-        deserializer.missing_functions());
+        deserializer.lazy_functions(), deserializer.liftoff_functions());
     wasm_engine->UpdateNativeModuleCache(error, &shared_native_module, isolate);
   }
 

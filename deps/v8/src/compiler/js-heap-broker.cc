@@ -30,26 +30,30 @@ namespace compiler {
 
 #define TRACE(broker, x) TRACE_BROKER(broker, x)
 
+#ifdef V8_STATIC_CONSTEXPR_VARIABLES_NEED_DEFINITIONS
 // These definitions are here in order to please the linker, which in debug mode
 // sometimes requires static constants to be defined in .cc files.
+// This is, however, deprecated (and unnecessary) in C++17.
 const uint32_t JSHeapBroker::kMinimalRefsBucketCount;
 const uint32_t JSHeapBroker::kInitialRefsBucketCount;
+#endif
 
 void JSHeapBroker::IncrementTracingIndentation() { ++trace_indentation_; }
 
 void JSHeapBroker::DecrementTracingIndentation() { --trace_indentation_; }
 
 JSHeapBroker::JSHeapBroker(Isolate* isolate, Zone* broker_zone,
-                           bool tracing_enabled, bool is_concurrent_inlining,
-                           CodeKind code_kind)
+                           bool tracing_enabled, CodeKind code_kind)
     : isolate_(isolate),
+#if V8_COMPRESS_POINTERS
+      cage_base_(isolate),
+#endif  // V8_COMPRESS_POINTERS
       zone_(broker_zone),
       refs_(zone()->New<RefsMap>(kMinimalRefsBucketCount, AddressMatcher(),
                                  zone())),
       root_index_map_(isolate),
       array_and_object_prototypes_(zone()),
       tracing_enabled_(tracing_enabled),
-      is_concurrent_inlining_(is_concurrent_inlining),
       code_kind_(code_kind),
       feedback_(zone()),
       property_access_infos_(zone()),
@@ -582,21 +586,22 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForPropertyAccess(
 
   // If no maps were found for a non-megamorphic access, then our maps died
   // and we should soft-deopt.
-  if (maps.empty() && nexus.ic_state() != MEGAMORPHIC) {
+  if (maps.empty() && nexus.ic_state() != InlineCacheState::MEGAMORPHIC) {
     return NewInsufficientFeedback(kind);
   }
 
   if (name.has_value()) {
     // We rely on this invariant in JSGenericLowering.
-    DCHECK_IMPLIES(maps.empty(), nexus.ic_state() == MEGAMORPHIC);
+    DCHECK_IMPLIES(maps.empty(),
+                   nexus.ic_state() == InlineCacheState::MEGAMORPHIC);
     return *zone()->New<NamedAccessFeedback>(*name, maps, kind);
-  } else if (nexus.GetKeyType() == ELEMENT && !maps.empty()) {
+  } else if (nexus.GetKeyType() == IcCheckType::kElement && !maps.empty()) {
     return ProcessFeedbackMapsForElementAccess(
         maps, KeyedAccessMode::FromNexus(nexus), kind);
   } else {
     // No actionable feedback.
     DCHECK(maps.empty());
-    DCHECK_EQ(nexus.ic_state(), MEGAMORPHIC);
+    DCHECK_EQ(nexus.ic_state(), InlineCacheState::MEGAMORPHIC);
     // TODO(neis): Using ElementAccessFeedback here is kind of an abuse.
     return *zone()->New<ElementAccessFeedback>(
         zone(), KeyedAccessMode::FromNexus(nexus), kind);
@@ -611,7 +616,8 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForGlobalAccess(
          nexus.kind() == FeedbackSlotKind::kStoreGlobalSloppy ||
          nexus.kind() == FeedbackSlotKind::kStoreGlobalStrict);
   if (nexus.IsUninitialized()) return NewInsufficientFeedback(nexus.kind());
-  if (nexus.ic_state() != MONOMORPHIC || nexus.GetFeedback()->IsCleared()) {
+  if (nexus.ic_state() != InlineCacheState::MONOMORPHIC ||
+      nexus.GetFeedback()->IsCleared()) {
     return *zone()->New<GlobalAccessFeedback>(nexus.kind());
   }
 
@@ -702,9 +708,6 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForArrayOrObjectLiteral(
 
   AllocationSiteRef site =
       MakeRefAssumeMemoryFence(this, AllocationSite::cast(object));
-  if (!is_concurrent_inlining() && site.PointsToLiteral()) {
-    site.SerializeRecursive(NotConcurrentInliningTag{this});
-  }
   return *zone()->New<LiteralFeedback>(site, nexus.kind());
 }
 
@@ -720,9 +723,6 @@ ProcessedFeedback const& JSHeapBroker::ReadFeedbackForRegExpLiteral(
 
   RegExpBoilerplateDescriptionRef boilerplate = MakeRefAssumeMemoryFence(
       this, RegExpBoilerplateDescription::cast(object));
-  if (!is_concurrent_inlining()) {
-    boilerplate.Serialize(NotConcurrentInliningTag{this});
-  }
   return *zone()->New<RegExpLiteralFeedback>(boilerplate, nexus.kind());
 }
 
@@ -963,12 +963,10 @@ PropertyAccessInfo JSHeapBroker::GetPropertyAccessInfo(
   AccessInfoFactory factory(this, dependencies, zone());
   PropertyAccessInfo access_info =
       factory.ComputePropertyAccessInfo(map, name, access_mode);
-  if (is_concurrent_inlining_) {
-    TRACE(this, "Storing PropertyAccessInfo for "
-                    << access_mode << " of property " << name << " on map "
-                    << map);
-    property_access_infos_.insert({target, access_info});
-  }
+  TRACE(this, "Storing PropertyAccessInfo for "
+                  << access_mode << " of property " << name << " on map "
+                  << map);
+  property_access_infos_.insert({target, access_info});
   return access_info;
 }
 
@@ -981,16 +979,16 @@ MinimorphicLoadPropertyAccessInfo JSHeapBroker::GetPropertyAccessInfo(
   AccessInfoFactory factory(this, nullptr, zone());
   MinimorphicLoadPropertyAccessInfo access_info =
       factory.ComputePropertyAccessInfo(feedback);
-  if (is_concurrent_inlining_) {
-    // We can assume a memory fence on {source.vector} because in production,
-    // the vector has already passed the gc predicate. Unit tests create
-    // FeedbackSource objects directly from handles, but they run on
-    // the main thread.
-    TRACE(this, "Storing MinimorphicLoadPropertyAccessInfo for "
-                    << source.index() << "  "
-                    << MakeRefAssumeMemoryFence<Object>(this, source.vector));
-    minimorphic_property_access_infos_.insert({source, access_info});
-  }
+
+  // We can assume a memory fence on {source.vector} because in production,
+  // the vector has already passed the gc predicate. Unit tests create
+  // FeedbackSource objects directly from handles, but they run on
+  // the main thread.
+  TRACE(this, "Storing MinimorphicLoadPropertyAccessInfo for "
+                  << source.index() << "  "
+                  << MakeRefAssumeMemoryFence<Object>(this, source.vector));
+  minimorphic_property_access_infos_.insert({source, access_info});
+
   return access_info;
 }
 

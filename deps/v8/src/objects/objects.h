@@ -96,6 +96,7 @@
 //         - WasmMemoryObject
 //         - WasmModuleObject
 //         - WasmTableObject
+//         - WasmSuspenderObject
 //       - JSProxy
 //     - FixedArrayBase
 //       - ByteArray
@@ -174,7 +175,7 @@
 //       - BreakPoint
 //       - BreakPointInfo
 //       - CachedTemplateObject
-//       - StackFrameInfo
+//       - CallSiteInfo
 //       - CodeCache
 //       - PropertyDescriptorObject
 //       - PrototypeInfo
@@ -189,6 +190,7 @@
 //         - SourceTextModule
 //         - SyntheticModule
 //       - SourceTextModuleInfoEntry
+//       - StackFrameInfo
 //     - FeedbackCell
 //     - FeedbackVector
 //     - PreparseData
@@ -680,6 +682,15 @@ class Object : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
     }
   }
 
+  // Atomically reads a field using relaxed memory ordering. Can only be used
+  // with integral types whose size is <= kTaggedSize (to guarantee alignment).
+  template <class T,
+            typename std::enable_if<(std::is_arithmetic<T>::value ||
+                                     std::is_enum<T>::value) &&
+                                        !std::is_floating_point<T>::value,
+                                    int>::type = 0>
+  inline T Relaxed_ReadField(size_t offset) const;
+
   template <class T, typename std::enable_if<std::is_arithmetic<T>::value ||
                                                  std::is_enum<T>::value,
                                              int>::type = 0>
@@ -699,16 +710,15 @@ class Object : public TaggedImpl<HeapObjectReferenceType::STRONG, Address> {
   }
 
   //
-  // CagedPointer field accessors.
+  // SandboxedPointer_t field accessors.
   //
-#ifdef V8_CAGED_POINTERS
-  inline Address ReadCagedPointerField(size_t offset,
-                                       PtrComprCageBase cage_base) const;
-  inline void WriteCagedPointerField(size_t offset, PtrComprCageBase cage_base,
-                                     Address value);
-  inline void WriteCagedPointerField(size_t offset, Isolate* isolate,
-                                     Address value);
-#endif  // V8_CAGED_POINTERS
+  inline Address ReadSandboxedPointerField(size_t offset,
+                                           PtrComprCageBase cage_base) const;
+  inline void WriteSandboxedPointerField(size_t offset,
+                                         PtrComprCageBase cage_base,
+                                         Address value);
+  inline void WriteSandboxedPointerField(size_t offset, Isolate* isolate,
+                                         Address value);
 
   //
   // ExternalPointer_t field accessors.

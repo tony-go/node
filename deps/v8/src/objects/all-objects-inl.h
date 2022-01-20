@@ -14,6 +14,7 @@
 #include "src/objects/api-callbacks-inl.h"
 #include "src/objects/arguments-inl.h"
 #include "src/objects/bigint-inl.h"
+#include "src/objects/call-site-info-inl.h"
 #include "src/objects/cell-inl.h"
 #include "src/objects/code-inl.h"
 #include "src/objects/compilation-cache-table-inl.h"
@@ -57,7 +58,6 @@
 #include "src/objects/microtask-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/name-inl.h"
-#include "src/objects/objects-body-descriptors-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball-inl.h"
 #include "src/objects/ordered-hash-table-inl.h"
@@ -73,7 +73,6 @@
 #include "src/objects/shared-function-info-inl.h"
 #include "src/objects/slots-atomic-inl.h"
 #include "src/objects/slots-inl.h"
-#include "src/objects/stack-frame-info-inl.h"
 #include "src/objects/string-inl.h"
 #include "src/objects/string-set-inl.h"
 #include "src/objects/string-table-inl.h"
@@ -87,6 +86,7 @@
 #include "src/objects/templates-inl.h"
 #include "src/objects/torque-defined-classes-inl.h"
 #include "src/objects/transitions-inl.h"
+#include "src/objects/turbofan-types-inl.h"
 
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-break-iterator-inl.h"

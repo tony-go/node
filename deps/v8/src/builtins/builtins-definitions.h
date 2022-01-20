@@ -423,8 +423,8 @@ namespace internal {
                                                                                \
   /* AsyncFunction */                                                          \
   TFS(AsyncFunctionEnter, kClosure, kReceiver)                                 \
-  TFS(AsyncFunctionReject, kAsyncFunctionObject, kReason, kCanSuspend)         \
-  TFS(AsyncFunctionResolve, kAsyncFunctionObject, kValue, kCanSuspend)         \
+  TFS(AsyncFunctionReject, kAsyncFunctionObject, kReason)                      \
+  TFS(AsyncFunctionResolve, kAsyncFunctionObject, kValue)                      \
   TFC(AsyncFunctionLazyDeoptContinuation, AsyncFunctionStackParameter)         \
   TFS(AsyncFunctionAwaitCaught, kAsyncFunctionObject, kValue)                  \
   TFS(AsyncFunctionAwaitUncaught, kAsyncFunctionObject, kValue)                \
@@ -704,17 +704,29 @@ namespace internal {
                                                                                \
   /* Binary ops with feedback collection */                                    \
   TFC(Add_Baseline, BinaryOp_Baseline)                                         \
+  TFC(AddSmi_Baseline, BinaryOp_Baseline)                                      \
   TFC(Subtract_Baseline, BinaryOp_Baseline)                                    \
+  TFC(SubtractSmi_Baseline, BinaryOp_Baseline)                                 \
   TFC(Multiply_Baseline, BinaryOp_Baseline)                                    \
+  TFC(MultiplySmi_Baseline, BinaryOp_Baseline)                                 \
   TFC(Divide_Baseline, BinaryOp_Baseline)                                      \
+  TFC(DivideSmi_Baseline, BinaryOp_Baseline)                                   \
   TFC(Modulus_Baseline, BinaryOp_Baseline)                                     \
+  TFC(ModulusSmi_Baseline, BinaryOp_Baseline)                                  \
   TFC(Exponentiate_Baseline, BinaryOp_Baseline)                                \
+  TFC(ExponentiateSmi_Baseline, BinaryOp_Baseline)                             \
   TFC(BitwiseAnd_Baseline, BinaryOp_Baseline)                                  \
+  TFC(BitwiseAndSmi_Baseline, BinaryOp_Baseline)                               \
   TFC(BitwiseOr_Baseline, BinaryOp_Baseline)                                   \
+  TFC(BitwiseOrSmi_Baseline, BinaryOp_Baseline)                                \
   TFC(BitwiseXor_Baseline, BinaryOp_Baseline)                                  \
+  TFC(BitwiseXorSmi_Baseline, BinaryOp_Baseline)                               \
   TFC(ShiftLeft_Baseline, BinaryOp_Baseline)                                   \
+  TFC(ShiftLeftSmi_Baseline, BinaryOp_Baseline)                                \
   TFC(ShiftRight_Baseline, BinaryOp_Baseline)                                  \
+  TFC(ShiftRightSmi_Baseline, BinaryOp_Baseline)                               \
   TFC(ShiftRightLogical_Baseline, BinaryOp_Baseline)                           \
+  TFC(ShiftRightLogicalSmi_Baseline, BinaryOp_Baseline)                        \
                                                                                \
   TFC(Add_WithFeedback, BinaryOp_WithFeedback)                                 \
   TFC(Subtract_WithFeedback, BinaryOp_WithFeedback)                            \
@@ -936,6 +948,7 @@ namespace internal {
   /* Wasm */                                                                   \
   IF_WASM(ASM, GenericJSToWasmWrapper, Dummy)                                  \
   IF_WASM(ASM, WasmReturnPromiseOnSuspend, Dummy)                              \
+  IF_WASM(ASM, WasmSuspend, WasmSuspend)                                       \
   IF_WASM(ASM, WasmCompileLazy, Dummy)                                         \
   IF_WASM(ASM, WasmDebugBreak, Dummy)                                          \
   IF_WASM(ASM, WasmOnStackReplace, Dummy)                                      \
@@ -1625,7 +1638,10 @@ namespace internal {
   /* Temporal #sec-temporal.calendar.prototype.tostring */                     \
   CPP(TemporalCalendarPrototypeToString)                                       \
   /* Temporal #sec-temporal.calendar.prototype.tojson */                       \
-  CPP(TemporalCalendarPrototypeToJSON)
+  CPP(TemporalCalendarPrototypeToJSON)                                         \
+                                                                               \
+  /* "Private" (created but not exposed) Bulitins needed by Temporal */        \
+  TFJ(TemporalInstantFixedArrayFromIterable, kJSArgcReceiverSlots, kIterable)
 
 #define BUILTIN_LIST_BASE(CPP, TFJ, TFC, TFS, TFH, ASM) \
   BUILTIN_LIST_BASE_TIER0(CPP, TFJ, TFC, TFS, TFH, ASM) \

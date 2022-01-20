@@ -1043,62 +1043,62 @@ void BaselineCompiler::VisitShiftRightLogical() {
 }
 
 void BaselineCompiler::VisitAddSmi() {
-  CallBuiltin<Builtin::kAdd_Baseline>(kInterpreterAccumulatorRegister,
-                                      IntAsSmi(0), Index(1));
-}
-
-void BaselineCompiler::VisitSubSmi() {
-  CallBuiltin<Builtin::kSubtract_Baseline>(kInterpreterAccumulatorRegister,
-                                           IntAsSmi(0), Index(1));
-}
-
-void BaselineCompiler::VisitMulSmi() {
-  CallBuiltin<Builtin::kMultiply_Baseline>(kInterpreterAccumulatorRegister,
-                                           IntAsSmi(0), Index(1));
-}
-
-void BaselineCompiler::VisitDivSmi() {
-  CallBuiltin<Builtin::kDivide_Baseline>(kInterpreterAccumulatorRegister,
+  CallBuiltin<Builtin::kAddSmi_Baseline>(kInterpreterAccumulatorRegister,
                                          IntAsSmi(0), Index(1));
 }
 
+void BaselineCompiler::VisitSubSmi() {
+  CallBuiltin<Builtin::kSubtractSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                              IntAsSmi(0), Index(1));
+}
+
+void BaselineCompiler::VisitMulSmi() {
+  CallBuiltin<Builtin::kMultiplySmi_Baseline>(kInterpreterAccumulatorRegister,
+                                              IntAsSmi(0), Index(1));
+}
+
+void BaselineCompiler::VisitDivSmi() {
+  CallBuiltin<Builtin::kDivideSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                            IntAsSmi(0), Index(1));
+}
+
 void BaselineCompiler::VisitModSmi() {
-  CallBuiltin<Builtin::kModulus_Baseline>(kInterpreterAccumulatorRegister,
-                                          IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kModulusSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                             IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitExpSmi() {
-  CallBuiltin<Builtin::kExponentiate_Baseline>(kInterpreterAccumulatorRegister,
-                                               IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kExponentiateSmi_Baseline>(
+      kInterpreterAccumulatorRegister, IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitBitwiseOrSmi() {
-  CallBuiltin<Builtin::kBitwiseOr_Baseline>(kInterpreterAccumulatorRegister,
-                                            IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kBitwiseOrSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                               IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitBitwiseXorSmi() {
-  CallBuiltin<Builtin::kBitwiseXor_Baseline>(kInterpreterAccumulatorRegister,
-                                             IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kBitwiseXorSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                                IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitBitwiseAndSmi() {
-  CallBuiltin<Builtin::kBitwiseAnd_Baseline>(kInterpreterAccumulatorRegister,
-                                             IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kBitwiseAndSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                                IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitShiftLeftSmi() {
-  CallBuiltin<Builtin::kShiftLeft_Baseline>(kInterpreterAccumulatorRegister,
-                                            IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kShiftLeftSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                               IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitShiftRightSmi() {
-  CallBuiltin<Builtin::kShiftRight_Baseline>(kInterpreterAccumulatorRegister,
-                                             IntAsSmi(0), Index(1));
+  CallBuiltin<Builtin::kShiftRightSmi_Baseline>(kInterpreterAccumulatorRegister,
+                                                IntAsSmi(0), Index(1));
 }
 
 void BaselineCompiler::VisitShiftRightLogicalSmi() {
-  CallBuiltin<Builtin::kShiftRightLogical_Baseline>(
+  CallBuiltin<Builtin::kShiftRightLogicalSmi_Baseline>(
       kInterpreterAccumulatorRegister, IntAsSmi(0), Index(1));
 }
 
@@ -1211,14 +1211,12 @@ void BaselineCompiler::BuildCall(uint32_t slot, uint32_t arg_count,
 void BaselineCompiler::VisitCallAnyReceiver() {
   interpreter::RegisterList args = iterator().GetRegisterListOperand(1);
   uint32_t arg_count = args.register_count();
-  if (!kJSArgcIncludesReceiver) arg_count -= 1;  // Remove receiver.
   BuildCall<ConvertReceiverMode::kAny>(Index(3), arg_count, args);
 }
 
 void BaselineCompiler::VisitCallProperty() {
   interpreter::RegisterList args = iterator().GetRegisterListOperand(1);
   uint32_t arg_count = args.register_count();
-  if (!kJSArgcIncludesReceiver) arg_count -= 1;  // Remove receiver.
   BuildCall<ConvertReceiverMode::kNotNullOrUndefined>(Index(3), arg_count,
                                                       args);
 }
@@ -1271,7 +1269,6 @@ void BaselineCompiler::VisitCallWithSpread() {
   args = args.Truncate(args.register_count() - 1);
 
   uint32_t arg_count = args.register_count();
-  if (!kJSArgcIncludesReceiver) arg_count -= 1;  // Remove receiver.
 
   CallBuiltin<Builtin::kCallWithSpread_Baseline>(
       RegisterOperand(0),  // kFunction
@@ -2121,15 +2118,8 @@ void BaselineCompiler::VisitReturn() {
                          iterator().current_bytecode_size_without_prefix();
   int parameter_count = bytecode_->parameter_count();
 
-  if (kJSArgcIncludesReceiver) {
-    TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count,
-                                                  -profiling_weight);
-
-  } else {
-    int parameter_count_without_receiver = parameter_count - 1;
-    TailCallBuiltin<Builtin::kBaselineLeaveFrame>(
-        parameter_count_without_receiver, -profiling_weight);
-  }
+  TailCallBuiltin<Builtin::kBaselineLeaveFrame>(parameter_count,
+                                                -profiling_weight);
 }
 
 void BaselineCompiler::VisitThrowReferenceErrorIfHole() {

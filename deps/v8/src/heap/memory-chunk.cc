@@ -93,10 +93,9 @@ void MemoryChunk::SetCodeModificationPermissions() {
     // We may use RWX pages to write code. Some CPUs have optimisations to push
     // updates to code to the icache through a fast path, and they may filter
     // updates based on the written memory being executable.
-    CHECK(reservation_.SetPermissions(unprotect_start, unprotect_size,
-                                      FLAG_write_code_using_rwx
-                                          ? PageAllocator::kReadWriteExecute
-                                          : PageAllocator::kReadWrite));
+    CHECK(reservation_.SetPermissions(
+        unprotect_start, unprotect_size,
+        MemoryChunk::GetCodeModificationPermission()));
   }
 }
 
@@ -123,6 +122,8 @@ MemoryChunk* MemoryChunk::Initialize(BasicMemoryChunk* basic_chunk, Heap* heap,
 
   base::AsAtomicPointer::Release_Store(&chunk->slot_set_[OLD_TO_NEW], nullptr);
   base::AsAtomicPointer::Release_Store(&chunk->slot_set_[OLD_TO_OLD], nullptr);
+  base::AsAtomicPointer::Release_Store(&chunk->slot_set_[CLIENT_TO_SHARED],
+                                       nullptr);
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
     base::AsAtomicPointer::Release_Store(&chunk->slot_set_[OLD_TO_CODE],
                                          nullptr);
@@ -260,6 +261,8 @@ void MemoryChunk::ReleaseAllAllocatedMemory() {
 
 template V8_EXPORT_PRIVATE SlotSet* MemoryChunk::AllocateSlotSet<OLD_TO_NEW>();
 template V8_EXPORT_PRIVATE SlotSet* MemoryChunk::AllocateSlotSet<OLD_TO_OLD>();
+template V8_EXPORT_PRIVATE SlotSet*
+MemoryChunk::AllocateSlotSet<CLIENT_TO_SHARED>();
 #ifdef V8_EXTERNAL_CODE_SPACE
 template V8_EXPORT_PRIVATE SlotSet* MemoryChunk::AllocateSlotSet<OLD_TO_CODE>();
 #endif  // V8_EXTERNAL_CODE_SPACE
@@ -287,6 +290,7 @@ SlotSet* MemoryChunk::AllocateSlotSet(SlotSet** slot_set) {
 
 template void MemoryChunk::ReleaseSlotSet<OLD_TO_NEW>();
 template void MemoryChunk::ReleaseSlotSet<OLD_TO_OLD>();
+template void MemoryChunk::ReleaseSlotSet<CLIENT_TO_SHARED>();
 #ifdef V8_EXTERNAL_CODE_SPACE
 template void MemoryChunk::ReleaseSlotSet<OLD_TO_CODE>();
 #endif  // V8_EXTERNAL_CODE_SPACE
@@ -390,7 +394,7 @@ void MemoryChunk::InvalidateRecordedSlots(HeapObject object) {
     RegisterObjectWithInvalidatedSlots<OLD_TO_OLD>(object);
   }
 
-  if (!FLAG_always_promote_young_mc || slot_set_[OLD_TO_NEW] != nullptr)
+  if (slot_set_[OLD_TO_NEW] != nullptr)
     RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(object);
 }
 

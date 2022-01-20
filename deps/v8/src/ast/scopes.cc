@@ -143,8 +143,9 @@ DeclarationScope::DeclarationScope(Zone* zone,
                                    AstValueFactory* ast_value_factory,
                                    REPLMode repl_mode)
     : Scope(zone),
-      function_kind_(repl_mode == REPLMode::kYes ? kAsyncFunction
-                                                 : kNormalFunction),
+      function_kind_(repl_mode == REPLMode::kYes
+                         ? FunctionKind::kAsyncFunction
+                         : FunctionKind::kNormalFunction),
       params_(4, zone) {
   DCHECK_EQ(scope_type_, SCRIPT_SCOPE);
   SetDefaults();
@@ -165,16 +166,19 @@ DeclarationScope::DeclarationScope(Zone* zone, Scope* outer_scope,
 
 ModuleScope::ModuleScope(DeclarationScope* script_scope,
                          AstValueFactory* avfactory)
-    : DeclarationScope(avfactory->zone(), script_scope, MODULE_SCOPE, kModule),
-      module_descriptor_(avfactory->zone()->New<SourceTextModuleDescriptor>(
-          avfactory->zone())) {
+    : DeclarationScope(avfactory->single_parse_zone(), script_scope,
+                       MODULE_SCOPE, FunctionKind::kModule),
+      module_descriptor_(
+          avfactory->single_parse_zone()->New<SourceTextModuleDescriptor>(
+              avfactory->single_parse_zone())) {
   set_language_mode(LanguageMode::kStrict);
   DeclareThis(avfactory);
 }
 
-ModuleScope::ModuleScope(Isolate* isolate, Handle<ScopeInfo> scope_info,
+ModuleScope::ModuleScope(Handle<ScopeInfo> scope_info,
                          AstValueFactory* avfactory)
-    : DeclarationScope(avfactory->zone(), MODULE_SCOPE, avfactory, scope_info),
+    : DeclarationScope(avfactory->single_parse_zone(), MODULE_SCOPE, avfactory,
+                       scope_info),
       module_descriptor_(nullptr) {
   set_language_mode(LanguageMode::kStrict);
 }
@@ -186,7 +190,8 @@ ClassScope::ClassScope(Zone* zone, Scope* outer_scope, bool is_anonymous)
   set_language_mode(LanguageMode::kStrict);
 }
 
-ClassScope::ClassScope(Isolate* isolate, Zone* zone,
+template <typename IsolateT>
+ClassScope::ClassScope(IsolateT* isolate, Zone* zone,
                        AstValueFactory* ast_value_factory,
                        Handle<ScopeInfo> scope_info)
     : Scope(zone, CLASS_SCOPE, ast_value_factory, scope_info),
@@ -201,23 +206,30 @@ ClassScope::ClassScope(Isolate* isolate, Zone* zone,
 
   // If the class variable is context-allocated and its index is
   // saved for deserialization, deserialize it.
-  if (scope_info->HasSavedClassVariableIndex()) {
-    int index = scope_info->SavedClassVariableContextLocalIndex();
-    DCHECK_GE(index, 0);
-    DCHECK_LT(index, scope_info->ContextLocalCount());
-    String name = scope_info->ContextLocalName(index);
+  if (scope_info->HasSavedClassVariable()) {
+    String name;
+    int index;
+    std::tie(name, index) = scope_info->SavedClassVariable();
     DCHECK_EQ(scope_info->ContextLocalMode(index), VariableMode::kConst);
     DCHECK_EQ(scope_info->ContextLocalInitFlag(index),
               InitializationFlag::kNeedsInitialization);
     DCHECK_EQ(scope_info->ContextLocalMaybeAssignedFlag(index),
               MaybeAssignedFlag::kMaybeAssigned);
     Variable* var = DeclareClassVariable(
-        ast_value_factory, ast_value_factory->GetString(handle(name, isolate)),
+        ast_value_factory,
+        ast_value_factory->GetString(name,
+                                     SharedStringAccessGuardIfNeeded(isolate)),
         kNoSourcePosition);
     var->AllocateTo(VariableLocation::CONTEXT,
                     Context::MIN_CONTEXT_SLOTS + index);
   }
 }
+template ClassScope::ClassScope(Isolate* isolate, Zone* zone,
+                                AstValueFactory* ast_value_factory,
+                                Handle<ScopeInfo> scope_info);
+template ClassScope::ClassScope(LocalIsolate* isolate, Zone* zone,
+                                AstValueFactory* ast_value_factory,
+                                Handle<ScopeInfo> scope_info);
 
 Scope::Scope(Zone* zone, ScopeType scope_type,
              AstValueFactory* ast_value_factory, Handle<ScopeInfo> scope_info)
@@ -394,7 +406,8 @@ bool Scope::ContainsAsmModule() const {
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-Scope* Scope::DeserializeScopeChain(Isolate* isolate, Zone* zone,
+template <typename IsolateT>
+Scope* Scope::DeserializeScopeChain(IsolateT* isolate, Zone* zone,
                                     ScopeInfo scope_info,
                                     DeclarationScope* script_scope,
                                     AstValueFactory* ast_value_factory,
@@ -450,19 +463,22 @@ Scope* Scope::DeserializeScopeChain(Isolate* isolate, Zone* zone,
                                        handle(scope_info, isolate));
       }
     } else if (scope_info.scope_type() == MODULE_SCOPE) {
-      outer_scope = zone->New<ModuleScope>(isolate, handle(scope_info, isolate),
+      outer_scope = zone->New<ModuleScope>(handle(scope_info, isolate),
                                            ast_value_factory);
     } else {
       DCHECK_EQ(scope_info.scope_type(), CATCH_SCOPE);
       DCHECK_EQ(scope_info.ContextLocalCount(), 1);
       DCHECK_EQ(scope_info.ContextLocalMode(0), VariableMode::kVar);
       DCHECK_EQ(scope_info.ContextLocalInitFlag(0), kCreatedInitialized);
-      String name = scope_info.ContextLocalName(0);
+      DCHECK(scope_info.HasInlinedLocalNames());
+      String name = scope_info.ContextInlinedLocalName(0);
       MaybeAssignedFlag maybe_assigned =
           scope_info.ContextLocalMaybeAssignedFlag(0);
-      outer_scope = zone->New<Scope>(
-          zone, ast_value_factory->GetString(handle(name, isolate)),
-          maybe_assigned, handle(scope_info, isolate));
+      outer_scope =
+          zone->New<Scope>(zone,
+                           ast_value_factory->GetString(
+                               name, SharedStringAccessGuardIfNeeded(isolate)),
+                           maybe_assigned, handle(scope_info, isolate));
     }
     if (deserialization_mode == DeserializationMode::kScopesOnly) {
       outer_scope->scope_info_ = Handle<ScopeInfo>::null();
@@ -495,6 +511,17 @@ Scope* Scope::DeserializeScopeChain(Isolate* isolate, Zone* zone,
   script_scope->AddInnerScope(current_scope);
   return innermost_scope;
 }
+
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE)
+    Scope* Scope::DeserializeScopeChain(
+        Isolate* isolate, Zone* zone, ScopeInfo scope_info,
+        DeclarationScope* script_scope, AstValueFactory* ast_value_factory,
+        DeserializationMode deserialization_mode);
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE)
+    Scope* Scope::DeserializeScopeChain(
+        LocalIsolate* isolate, Zone* zone, ScopeInfo scope_info,
+        DeclarationScope* script_scope, AstValueFactory* ast_value_factory,
+        DeserializationMode deserialization_mode);
 
 DeclarationScope* Scope::AsDeclarationScope() {
   DCHECK(is_declaration_scope());
@@ -1410,7 +1437,7 @@ bool Scope::NeedsScopeInfo() const {
   DCHECK(!already_resolved_);
   DCHECK(GetClosureScope()->ShouldEagerCompile());
   // The debugger expects all functions to have scope infos.
-  // TODO(jochen|yangguo): Remove this requirement.
+  // TODO(yangguo): Remove this requirement.
   if (is_function_scope()) return true;
   return NeedsContext();
 }
@@ -1598,18 +1625,18 @@ void DeclarationScope::ResetAfterPreparsing(AstValueFactory* ast_value_factory,
   has_rest_ = false;
   function_ = nullptr;
 
-  DCHECK_NE(zone(), ast_value_factory->zone());
+  DCHECK_NE(zone(), ast_value_factory->single_parse_zone());
   // Make sure this scope and zone aren't used for allocation anymore.
   {
     // Get the zone, while variables_ is still valid
     Zone* zone = this->zone();
     variables_.Invalidate();
-    zone->ReleaseMemory();
+    zone->Reset();
   }
 
   if (aborted) {
     // Prepare scope for use in the outer zone.
-    variables_ = VariableMap(ast_value_factory->zone());
+    variables_ = VariableMap(ast_value_factory->single_parse_zone());
     if (!IsArrowFunction(function_kind_)) {
       has_simple_parameters_ = true;
       DeclareDefaultFunctionVariables(ast_value_factory);
@@ -1819,7 +1846,7 @@ void Scope::Print(int n) {
   // Print header.
   FunctionKind function_kind = is_function_scope()
                                    ? AsDeclarationScope()->function_kind()
-                                   : kNormalFunction;
+                                   : FunctionKind::kNormalFunction;
   Indent(n0, Header(scope_type_, function_kind, is_declaration_scope()));
   if (scope_name_ != nullptr && !scope_name_->IsEmpty()) {
     PrintF(" ");
@@ -2618,7 +2645,7 @@ void DeclarationScope::AllocateScopeInfos(ParseInfo* info, IsolateT* isolate) {
   // The debugger expects all shared function infos to contain a scope info.
   // Since the top-most scope will end up in a shared function info, make sure
   // it has one, even if it doesn't need a scope info.
-  // TODO(jochen|yangguo): Remove this requirement.
+  // TODO(yangguo): Remove this requirement.
   if (scope->scope_info_.is_null()) {
     scope->scope_info_ =
         ScopeInfo::Create(isolate, scope->zone(), scope, outer_scope);

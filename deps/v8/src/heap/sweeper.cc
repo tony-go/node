@@ -167,6 +167,8 @@ void Sweeper::StartSweeping() {
     // pages to be swept in order to move those objects).
     // Since maps don't move, there is no need to sort the pages from MAP_SPACE
     // before sweeping them.
+    // We sort in descending order of live bytes, i.e., ascending order of free
+    // bytes, because GetSweepingPageSafe returns pages in reverse order.
     if (space != MAP_SPACE) {
       int space_index = GetSweepSpaceIndex(space);
       std::sort(
@@ -412,8 +414,8 @@ int Sweeper::RawSweep(
   CleanupInvalidTypedSlotsOfFreeRanges(p, free_ranges_map);
   ClearMarkBitsAndHandleLivenessStatistics(p, live_bytes, free_list_mode);
 
-  p->set_concurrent_sweeping_state(Page::ConcurrentSweepingState::kDone);
   if (code_object_registry) code_object_registry->Finalize();
+  p->set_concurrent_sweeping_state(Page::ConcurrentSweepingState::kDone);
   if (free_list_mode == IGNORE_FREE_LIST) return 0;
 
   return static_cast<int>(

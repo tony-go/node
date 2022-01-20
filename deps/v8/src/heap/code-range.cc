@@ -53,6 +53,11 @@ Address CodeRangeAddressHint::GetAddressHint(size_t code_range_size,
         CHECK(IsAligned(result, alignment));
         return result;
       }
+      // The empty memory_ranges means that GetFreeMemoryRangesWithin() API
+      // is not supported, so use the lowest address from the preferred region
+      // as a hint because it'll be at least as good as the fallback hint but
+      // with a higher chances to point to the free address space range.
+      return RoundUp(preferred_region.begin(), alignment);
     }
     return RoundUp(FUNCTION_ADDR(&FunctionInStaticBinaryForAddressHint),
                    alignment);

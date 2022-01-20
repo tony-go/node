@@ -27,7 +27,7 @@
 #include "src/logging/counters.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
-#include "src/security/external-pointer.h"
+#include "src/sandbox/external-pointer.h"
 #include "src/snapshot/snapshot.h"
 
 // Satisfy cpplint check, but don't include platform-specific header. It is
@@ -371,45 +371,45 @@ void MacroAssembler::RecordWriteField(Register object, int offset,
   // turned on to provoke errors.
   if (FLAG_debug_code) {
     ASM_CODE_COMMENT_STRING(this, "Zap scratch registers");
-    Move(value, kZapValue, RelocInfo::NONE);
-    Move(slot_address, kZapValue, RelocInfo::NONE);
+    Move(value, kZapValue, RelocInfo::NO_INFO);
+    Move(slot_address, kZapValue, RelocInfo::NO_INFO);
   }
 }
 
-void TurboAssembler::EncodeCagedPointer(Register value) {
+void TurboAssembler::EncodeSandboxedPointer(Register value) {
   ASM_CODE_COMMENT(this);
-#ifdef V8_CAGED_POINTERS
+#ifdef V8_SANDBOXED_POINTERS
   subq(value, kPtrComprCageBaseRegister);
-  shlq(value, Immediate(kCagedPointerShift));
+  shlq(value, Immediate(kSandboxedPointerShift));
 #else
   UNREACHABLE();
 #endif
 }
 
-void TurboAssembler::DecodeCagedPointer(Register value) {
+void TurboAssembler::DecodeSandboxedPointer(Register value) {
   ASM_CODE_COMMENT(this);
-#ifdef V8_CAGED_POINTERS
-  shrq(value, Immediate(kCagedPointerShift));
+#ifdef V8_SANDBOXED_POINTERS
+  shrq(value, Immediate(kSandboxedPointerShift));
   addq(value, kPtrComprCageBaseRegister);
 #else
   UNREACHABLE();
 #endif
 }
 
-void TurboAssembler::LoadCagedPointerField(Register destination,
-                                           Operand field_operand) {
+void TurboAssembler::LoadSandboxedPointerField(Register destination,
+                                               Operand field_operand) {
   ASM_CODE_COMMENT(this);
   movq(destination, field_operand);
-  DecodeCagedPointer(destination);
+  DecodeSandboxedPointer(destination);
 }
 
-void TurboAssembler::StoreCagedPointerField(Operand dst_field_operand,
-                                            Register value) {
+void TurboAssembler::StoreSandboxedPointerField(Operand dst_field_operand,
+                                                Register value) {
   ASM_CODE_COMMENT(this);
   DCHECK(!AreAliased(value, kScratchRegister));
   DCHECK(!dst_field_operand.AddressUsesRegister(kScratchRegister));
   movq(kScratchRegister, value);
-  EncodeCagedPointer(kScratchRegister);
+  EncodeSandboxedPointer(kScratchRegister);
   movq(dst_field_operand, kScratchRegister);
 }
 
@@ -417,7 +417,7 @@ void TurboAssembler::LoadExternalPointerField(
     Register destination, Operand field_operand, ExternalPointerTag tag,
     Register scratch, IsolateRootLocation isolateRootLocation) {
   DCHECK(!AreAliased(destination, scratch));
-#ifdef V8_HEAP_SANDBOX
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
   DCHECK(!field_operand.AddressUsesRegister(scratch));
   if (isolateRootLocation == IsolateRootLocation::kInRootRegister) {
     DCHECK(root_array_available_);
@@ -438,7 +438,7 @@ void TurboAssembler::LoadExternalPointerField(
   }
 #else
   movq(destination, field_operand);
-#endif  // V8_HEAP_SANDBOX
+#endif  // V8_SANDBOXED_EXTERNAL_POINTERS
 }
 
 void TurboAssembler::MaybeSaveRegisters(RegList registers) {
@@ -524,7 +524,7 @@ void TurboAssembler::CallRecordWriteStub(
     if (options().inline_offheap_trampolines) {
       CallBuiltin(builtin);
     } else {
-      Handle<Code> code_target = isolate()->builtins()->code_handle(builtin);
+      Handle<CodeT> code_target = isolate()->builtins()->code_handle(builtin);
       Call(code_target, RelocInfo::CODE_TARGET);
     }
   }
@@ -552,7 +552,7 @@ void TurboAssembler::CallTSANStoreStub(Register address, Register value,
 
   if (isolate()) {
     Builtin builtin = CodeFactory::GetTSANStoreStub(fp_mode, size, order);
-    Handle<Code> code_target = isolate()->builtins()->code_handle(builtin);
+    Handle<CodeT> code_target = isolate()->builtins()->code_handle(builtin);
     Call(code_target, RelocInfo::CODE_TARGET);
   }
 #if V8_ENABLE_WEBASSEMBLY
@@ -593,7 +593,7 @@ void TurboAssembler::CallTSANRelaxedLoadStub(Register address,
 
   if (isolate()) {
     Builtin builtin = CodeFactory::GetTSANRelaxedLoadStub(fp_mode, size);
-    Handle<Code> code_target = isolate()->builtins()->code_handle(builtin);
+    Handle<CodeT> code_target = isolate()->builtins()->code_handle(builtin);
     Call(code_target, RelocInfo::CODE_TARGET);
   }
 #if V8_ENABLE_WEBASSEMBLY
@@ -669,8 +669,8 @@ void MacroAssembler::RecordWrite(Register object, Register slot_address,
   // turned on to provoke errors.
   if (FLAG_debug_code) {
     ASM_CODE_COMMENT_STRING(this, "Zap scratch registers");
-    Move(slot_address, kZapValue, RelocInfo::NONE);
-    Move(value, kZapValue, RelocInfo::NONE);
+    Move(slot_address, kZapValue, RelocInfo::NO_INFO);
+    Move(value, kZapValue, RelocInfo::NO_INFO);
   }
 }
 
@@ -757,7 +757,7 @@ void MacroAssembler::CallRuntime(const Runtime::Function* f, int num_arguments,
   // smarter.
   Move(rax, num_arguments);
   LoadAddress(rbx, ExternalReference::Create(f));
-  Handle<Code> code =
+  Handle<CodeT> code =
       CodeFactory::CEntry(isolate(), f->result_size, save_doubles);
   Call(code, RelocInfo::CODE_TARGET);
 }
@@ -786,8 +786,9 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& ext,
   ASM_CODE_COMMENT(this);
   // Set the entry point and jump to the C entry runtime stub.
   LoadAddress(rbx, ext);
-  Handle<Code> code = CodeFactory::CEntry(isolate(), 1, SaveFPRegsMode::kIgnore,
-                                          ArgvMode::kStack, builtin_exit_frame);
+  Handle<CodeT> code =
+      CodeFactory::CEntry(isolate(), 1, SaveFPRegsMode::kIgnore,
+                          ArgvMode::kStack, builtin_exit_frame);
   Jump(code, RelocInfo::CODE_TARGET);
 }
 
@@ -819,7 +820,7 @@ int TurboAssembler::RequiredStackSizeForCallerSaved(SaveFPRegsMode fp_mode,
 int TurboAssembler::PushCallerSaved(SaveFPRegsMode fp_mode, Register exclusion1,
                                     Register exclusion2, Register exclusion3) {
   ASM_CODE_COMMENT(this);
-  // We don't allow a GC during a store buffer overflow so there is no need to
+  // We don't allow a GC in a write barrier slow path so there is no need to
   // store the registers in any particular way, but we do have to store and
   // restore them.
   int bytes = 0;
@@ -905,99 +906,6 @@ void TurboAssembler::Pextrq(Register dst, XMMRegister src, int8_t imm8) {
     pextrq(dst, src, imm8);
   }
 }
-
-// Helper macro to define qfma macro-assembler. This takes care of every
-// possible case of register aliasing to minimize the number of instructions.
-#define QFMA(ps_or_pd)                        \
-  if (CpuFeatures::IsSupported(FMA3)) {       \
-    CpuFeatureScope fma3_scope(this, FMA3);   \
-    if (dst == src1) {                        \
-      vfmadd231##ps_or_pd(dst, src2, src3);   \
-    } else if (dst == src2) {                 \
-      vfmadd132##ps_or_pd(dst, src1, src3);   \
-    } else if (dst == src3) {                 \
-      vfmadd213##ps_or_pd(dst, src2, src1);   \
-    } else {                                  \
-      vmovups(dst, src1);                     \
-      vfmadd231##ps_or_pd(dst, src2, src3);   \
-    }                                         \
-  } else if (CpuFeatures::IsSupported(AVX)) { \
-    CpuFeatureScope avx_scope(this, AVX);     \
-    vmul##ps_or_pd(tmp, src2, src3);          \
-    vadd##ps_or_pd(dst, src1, tmp);           \
-  } else {                                    \
-    if (dst == src1) {                        \
-      movaps(tmp, src2);                      \
-      mul##ps_or_pd(tmp, src3);               \
-      add##ps_or_pd(dst, tmp);                \
-    } else if (dst == src2) {                 \
-      DCHECK_NE(src2, src1);                  \
-      mul##ps_or_pd(src2, src3);              \
-      add##ps_or_pd(src2, src1);              \
-    } else if (dst == src3) {                 \
-      DCHECK_NE(src3, src1);                  \
-      mul##ps_or_pd(src3, src2);              \
-      add##ps_or_pd(src3, src1);              \
-    } else {                                  \
-      movaps(dst, src2);                      \
-      mul##ps_or_pd(dst, src3);               \
-      add##ps_or_pd(dst, src1);               \
-    }                                         \
-  }
-
-// Helper macro to define qfms macro-assembler. This takes care of every
-// possible case of register aliasing to minimize the number of instructions.
-#define QFMS(ps_or_pd)                        \
-  if (CpuFeatures::IsSupported(FMA3)) {       \
-    CpuFeatureScope fma3_scope(this, FMA3);   \
-    if (dst == src1) {                        \
-      vfnmadd231##ps_or_pd(dst, src2, src3);  \
-    } else if (dst == src2) {                 \
-      vfnmadd132##ps_or_pd(dst, src1, src3);  \
-    } else if (dst == src3) {                 \
-      vfnmadd213##ps_or_pd(dst, src2, src1);  \
-    } else {                                  \
-      vmovups(dst, src1);                     \
-      vfnmadd231##ps_or_pd(dst, src2, src3);  \
-    }                                         \
-  } else if (CpuFeatures::IsSupported(AVX)) { \
-    CpuFeatureScope avx_scope(this, AVX);     \
-    vmul##ps_or_pd(tmp, src2, src3);          \
-    vsub##ps_or_pd(dst, src1, tmp);           \
-  } else {                                    \
-    movaps(tmp, src2);                        \
-    mul##ps_or_pd(tmp, src3);                 \
-    if (dst != src1) {                        \
-      movaps(dst, src1);                      \
-    }                                         \
-    sub##ps_or_pd(dst, tmp);                  \
-  }
-
-void TurboAssembler::F32x4Qfma(XMMRegister dst, XMMRegister src1,
-                               XMMRegister src2, XMMRegister src3,
-                               XMMRegister tmp) {
-  QFMA(ps)
-}
-
-void TurboAssembler::F32x4Qfms(XMMRegister dst, XMMRegister src1,
-                               XMMRegister src2, XMMRegister src3,
-                               XMMRegister tmp) {
-  QFMS(ps)
-}
-
-void TurboAssembler::F64x2Qfma(XMMRegister dst, XMMRegister src1,
-                               XMMRegister src2, XMMRegister src3,
-                               XMMRegister tmp) {
-  QFMA(pd);
-}
-
-void TurboAssembler::F64x2Qfms(XMMRegister dst, XMMRegister src1,
-                               XMMRegister src2, XMMRegister src3,
-                               XMMRegister tmp) {
-  QFMS(pd);
-}
-
-#undef QFMOP
 
 void TurboAssembler::Cvtss2sd(XMMRegister dst, XMMRegister src) {
   if (CpuFeatures::IsSupported(AVX)) {
@@ -1561,7 +1469,7 @@ void TurboAssembler::Move(Register dst, Smi source) {
   if (value == 0) {
     xorl(dst, dst);
   } else if (SmiValuesAre32Bits() || value < 0) {
-    Move(dst, source.ptr(), RelocInfo::NONE);
+    Move(dst, source.ptr(), RelocInfo::NO_INFO);
   } else {
     uint32_t uvalue = static_cast<uint32_t>(source.ptr());
     Move(dst, uvalue);
@@ -1596,7 +1504,7 @@ void TurboAssembler::Move(Register dst, Register src) {
 
 void TurboAssembler::Move(Register dst, Operand src) { movq(dst, src); }
 void TurboAssembler::Move(Register dst, Immediate src) {
-  if (src.rmode() == RelocInfo::Mode::NONE) {
+  if (src.rmode() == RelocInfo::Mode::NO_INFO) {
     Move(dst, src.value());
   } else {
     movl(dst, src);
@@ -1900,10 +1808,11 @@ void TurboAssembler::Jump(Address destination, RelocInfo::Mode rmode) {
   jmp(kScratchRegister);
 }
 
-void TurboAssembler::Jump(Handle<Code> code_object, RelocInfo::Mode rmode,
+void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode,
                           Condition cc) {
-  DCHECK_IMPLIES(options().isolate_independent_code,
-                 Builtins::IsIsolateIndependentBuiltin(*code_object));
+  DCHECK_IMPLIES(
+      options().isolate_independent_code,
+      Builtins::IsIsolateIndependentBuiltin(FromCodeT(*code_object)));
   if (options().inline_offheap_trampolines) {
     Builtin builtin = Builtin::kNoBuiltinId;
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
@@ -1920,7 +1829,7 @@ void TurboAssembler::Jump(Handle<Code> code_object, RelocInfo::Mode rmode,
   j(cc, code_object, rmode);
 }
 
-void MacroAssembler::JumpToInstructionStream(Address entry) {
+void MacroAssembler::JumpToOffHeapInstructionStream(Address entry) {
   Move(kOffHeapTrampolineRegister, entry, RelocInfo::OFF_HEAP_TARGET);
   jmp(kOffHeapTrampolineRegister);
 }
@@ -1931,7 +1840,7 @@ void TurboAssembler::Call(ExternalReference ext) {
 }
 
 void TurboAssembler::Call(Operand op) {
-  if (!CpuFeatures::IsSupported(ATOM)) {
+  if (!CpuFeatures::IsSupported(INTEL_ATOM)) {
     call(op);
   } else {
     movq(kScratchRegister, op);
@@ -1944,9 +1853,11 @@ void TurboAssembler::Call(Address destination, RelocInfo::Mode rmode) {
   call(kScratchRegister);
 }
 
-void TurboAssembler::Call(Handle<Code> code_object, RelocInfo::Mode rmode) {
-  DCHECK_IMPLIES(options().isolate_independent_code,
-                 Builtins::IsIsolateIndependentBuiltin(*code_object));
+void TurboAssembler::Call(Handle<CodeT> code_object, RelocInfo::Mode rmode) {
+  // TODO(v8:11880): avoid roundtrips between cdc and code.
+  DCHECK_IMPLIES(
+      options().isolate_independent_code,
+      Builtins::IsIsolateIndependentBuiltin(FromCodeT(*code_object)));
   if (options().inline_offheap_trampolines) {
     Builtin builtin = Builtin::kNoBuiltinId;
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
@@ -2008,6 +1919,14 @@ void TurboAssembler::TailCallBuiltin(Builtin builtin) {
 void TurboAssembler::LoadCodeObjectEntry(Register destination,
                                          Register code_object) {
   ASM_CODE_COMMENT(this);
+  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
+    LoadExternalPointerField(
+        destination,
+        FieldOperand(code_object, CodeDataContainer::kCodeEntryPointOffset),
+        kCodeEntryPointTag, kScratchRegister);
+    return;
+  }
+
   // Code objects are called differently depending on whether we are generating
   // builtin code (which will later be embedded into the binary) or compiling
   // user JS code at runtime.
@@ -2368,6 +2287,23 @@ void TurboAssembler::Ret(int bytes_dropped, Register scratch) {
   }
 }
 
+void TurboAssembler::IncsspqIfSupported(Register number_of_words,
+                                        Register scratch) {
+  // Optimized code can validate at runtime whether the cpu supports the
+  // incsspq instruction, so it shouldn't use this method.
+  CHECK(isolate()->IsGeneratingEmbeddedBuiltins());
+  DCHECK_NE(number_of_words, scratch);
+  Label not_supported;
+  ExternalReference supports_cetss =
+      ExternalReference::supports_cetss_address();
+  Operand supports_cetss_operand =
+      ExternalReferenceAsOperand(supports_cetss, scratch);
+  cmpb(supports_cetss_operand, Immediate(0));
+  j(equal, &not_supported, Label::kNear);
+  incsspq(number_of_words);
+  bind(&not_supported);
+}
+
 void MacroAssembler::CmpObjectType(Register heap_object, InstanceType type,
                                    Register map) {
   LoadMap(map, heap_object);
@@ -2712,11 +2648,9 @@ void MacroAssembler::InvokePrologue(Register expected_parameter_count,
       leaq(kScratchRegister,
            Operand(expected_parameter_count, times_system_pointer_size, 0));
       AllocateStackSpace(kScratchRegister);
-      // Extra words are the receiver (if not already included in argc) and the
-      // return address (if a jump).
+      // Extra words are for the return address (if a jump).
       int extra_words =
           type == InvokeType::kCall ? 0 : kReturnAddressStackSlotCount;
-      if (!kJSArgcIncludesReceiver) extra_words++;
 
       leaq(num, Operand(rax, extra_words));  // Number of words to copy.
       Move(current, 0);

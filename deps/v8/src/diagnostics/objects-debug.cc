@@ -16,6 +16,7 @@
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/arguments-inl.h"
 #include "src/objects/bigint.h"
+#include "src/objects/call-site-info-inl.h"
 #include "src/objects/cell-inl.h"
 #include "src/objects/data-handler-inl.h"
 #include "src/objects/debug-objects-inl.h"
@@ -69,7 +70,6 @@
 #include "src/objects/oddball-inl.h"
 #include "src/objects/promise-inl.h"
 #include "src/objects/property-descriptor-object-inl.h"
-#include "src/objects/stack-frame-info-inl.h"
 #include "src/objects/struct-inl.h"
 #include "src/objects/swiss-name-dictionary-inl.h"
 #include "src/objects/synthetic-module-inl.h"
@@ -170,22 +170,23 @@ void TaggedIndex::TaggedIndexVerify(Isolate* isolate) {
 
 void HeapObject::HeapObjectVerify(Isolate* isolate) {
   CHECK(IsHeapObject());
-  VerifyPointer(isolate, map(isolate));
-  CHECK(map(isolate).IsMap());
+  PtrComprCageBase cage_base(isolate);
+  VerifyPointer(isolate, map(cage_base));
+  CHECK(map(cage_base).IsMap(cage_base));
 
-  switch (map().instance_type()) {
+  switch (map(cage_base).instance_type()) {
 #define STRING_TYPE_CASE(TYPE, size, name, CamelName) case TYPE:
     STRING_TYPE_LIST(STRING_TYPE_CASE)
 #undef STRING_TYPE_CASE
-    if (IsConsString()) {
+    if (IsConsString(cage_base)) {
       ConsString::cast(*this).ConsStringVerify(isolate);
-    } else if (IsSlicedString()) {
+    } else if (IsSlicedString(cage_base)) {
       SlicedString::cast(*this).SlicedStringVerify(isolate);
-    } else if (IsThinString()) {
+    } else if (IsThinString(cage_base)) {
       ThinString::cast(*this).ThinStringVerify(isolate);
-    } else if (IsSeqString()) {
+    } else if (IsSeqString(cage_base)) {
       SeqString::cast(*this).SeqStringVerify(isolate);
-    } else if (IsExternalString()) {
+    } else if (IsExternalString(cage_base)) {
       ExternalString::cast(*this).ExternalStringVerify(isolate);
     } else {
       String::cast(*this).StringVerify(isolate);
@@ -201,6 +202,7 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
     case ORDERED_HASH_MAP_TYPE:
     case ORDERED_HASH_SET_TYPE:
     case ORDERED_NAME_DICTIONARY_TYPE:
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
     case NAME_DICTIONARY_TYPE:
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
@@ -425,7 +427,7 @@ void JSObject::JSObjectVerify(Isolate* isolate) {
     for (InternalIndex i : map().IterateOwnDescriptors()) {
       PropertyDetails details = descriptors.GetDetails(i);
       if (details.location() == PropertyLocation::kField) {
-        DCHECK_EQ(kData, details.kind());
+        DCHECK_EQ(PropertyKind::kData, details.kind());
         Representation r = details.representation();
         FieldIndex index = FieldIndex::ForDescriptor(map(), i);
         if (COMPRESS_POINTERS_BOOL && index.is_inobject()) {
@@ -616,6 +618,7 @@ void Context::ContextVerify(Isolate* isolate) {
 
 void NativeContext::NativeContextVerify(Isolate* isolate) {
   ContextVerify(isolate);
+  CHECK(retained_maps() == Smi::zero() || retained_maps().IsWeakArrayList());
   CHECK_EQ(length(), NativeContext::NATIVE_CONTEXT_SLOTS);
   CHECK_EQ(kVariableSizeSentinel, map().instance_size());
 }
@@ -802,27 +805,27 @@ void String::StringVerify(Isolate* isolate) {
 
 void ConsString::ConsStringVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::ConsStringVerify(*this, isolate);
-  CHECK_GE(this->length(), ConsString::kMinLength);
-  CHECK(this->length() == this->first().length() + this->second().length());
-  if (this->IsFlat()) {
+  CHECK_GE(length(), ConsString::kMinLength);
+  CHECK(length() == first().length() + second().length());
+  if (IsFlat(isolate)) {
     // A flat cons can only be created by String::SlowFlatten.
     // Afterwards, the first part may be externalized or internalized.
-    CHECK(this->first().IsSeqString() || this->first().IsExternalString() ||
-          this->first().IsThinString());
+    CHECK(first().IsSeqString() || first().IsExternalString() ||
+          first().IsThinString());
   }
 }
 
 void ThinString::ThinStringVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::ThinStringVerify(*this, isolate);
-  CHECK(this->actual().IsInternalizedString());
-  CHECK(this->actual().IsSeqString() || this->actual().IsExternalString());
+  CHECK(actual().IsInternalizedString());
+  CHECK(actual().IsSeqString() || actual().IsExternalString());
 }
 
 void SlicedString::SlicedStringVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::SlicedStringVerify(*this, isolate);
-  CHECK(!this->parent().IsConsString());
-  CHECK(!this->parent().IsSlicedString());
-  CHECK_GE(this->length(), SlicedString::kMinLength);
+  CHECK(!parent().IsConsString());
+  CHECK(!parent().IsSlicedString());
+  CHECK_GE(length(), SlicedString::kMinLength);
 }
 
 USE_TORQUE_VERIFIER(ExternalString)
@@ -851,8 +854,8 @@ void JSFunction::JSFunctionVerify(Isolate* isolate) {
   CHECK(context(isolate, kRelaxedLoad).IsContext());
   VerifyPointer(isolate, raw_feedback_cell(isolate));
   CHECK(raw_feedback_cell(isolate).IsFeedbackCell());
-  VerifyPointer(isolate, raw_code(isolate));
-  CHECK(raw_code(isolate).IsCodeT());
+  VerifyPointer(isolate, code(isolate));
+  CHECK(code(isolate).IsCodeT());
   CHECK(map(isolate).is_callable());
   Handle<JSFunction> function(*this, isolate);
   LookupIterator it(isolate, function, isolate->factory()->prototype_string(),
@@ -1011,6 +1014,12 @@ void CodeDataContainer::CodeDataContainerVerify(Isolate* isolate) {
   CHECK(next_code_link().IsCodeT() || next_code_link().IsUndefined(isolate));
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
     if (raw_code() != Smi::zero()) {
+#ifdef V8_EXTERNAL_CODE_SPACE
+      // kind and builtin_id() getters are not available on CodeDataContainer
+      // when external code space is not enabled.
+      CHECK_EQ(code().kind(), kind());
+      CHECK_EQ(code().builtin_id(), builtin_id());
+#endif  // V8_EXTERNAL_CODE_SPACE
       CHECK_EQ(code().InstructionStart(), code_entry_point());
       CHECK_EQ(code().code_data_container(kAcquireLoad), *this);
     }
@@ -1776,8 +1785,8 @@ void PreparseData::PreparseDataVerify(Isolate* isolate) {
   }
 }
 
-void StackFrameInfo::StackFrameInfoVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::StackFrameInfoVerify(*this, isolate);
+void CallSiteInfo::CallSiteInfoVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::CallSiteInfoVerify(*this, isolate);
 #if V8_ENABLE_WEBASSEMBLY
   CHECK_IMPLIES(IsAsmJsWasm(), IsWasm());
   CHECK_IMPLIES(IsWasm(), receiver_or_instance().IsWasmInstanceObject());
@@ -1792,6 +1801,16 @@ void FunctionTemplateRareData::FunctionTemplateRareDataVerify(
     Isolate* isolate) {
   CHECK(c_function_overloads().IsFixedArray() ||
         c_function_overloads().IsUndefined(isolate));
+}
+
+void StackFrameInfo::StackFrameInfoVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::StackFrameInfoVerify(*this, isolate);
+}
+
+void ErrorStackData::ErrorStackDataVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::ErrorStackDataVerify(*this, isolate);
+  CHECK_IMPLIES(!call_site_infos_or_formatted_stack().IsFixedArray(),
+                limit_or_stack_frame_infos().IsFixedArray());
 }
 
 // Helper class for verifying the string table.
@@ -1971,7 +1990,7 @@ bool DescriptorArray::IsSortedNoDuplicates() {
 
 bool TransitionArray::IsSortedNoDuplicates() {
   Name prev_key;
-  PropertyKind prev_kind = kData;
+  PropertyKind prev_kind = PropertyKind::kData;
   PropertyAttributes prev_attributes = NONE;
   uint32_t prev_hash = 0;
 
@@ -1979,7 +1998,7 @@ bool TransitionArray::IsSortedNoDuplicates() {
     Name key = GetSortedKey(i);
     CHECK(key.HasHashCode());
     uint32_t hash = key.hash();
-    PropertyKind kind = kData;
+    PropertyKind kind = PropertyKind::kData;
     PropertyAttributes attributes = NONE;
     if (!TransitionsAccessor::IsSpecialTransition(key.GetReadOnlyRoots(),
                                                   key)) {

@@ -107,19 +107,21 @@ void Builtins::TearDown() { initialized_ = false; }
 
 const char* Builtins::Lookup(Address pc) {
   // Off-heap pc's can be looked up through binary search.
-  Builtin builtin = InstructionStream::TryLookupCode(isolate_, pc);
+  Builtin builtin = OffHeapInstructionStream::TryLookupCode(isolate_, pc);
   if (Builtins::IsBuiltinId(builtin)) return name(builtin);
 
   // May be called during initialization (disassembler).
   if (!initialized_) return nullptr;
   for (Builtin builtin_ix = Builtins::kFirst; builtin_ix <= Builtins::kLast;
        ++builtin_ix) {
-    if (code(builtin_ix).contains(isolate_, pc)) return name(builtin_ix);
+    if (FromCodeT(code(builtin_ix)).contains(isolate_, pc)) {
+      return name(builtin_ix);
+    }
   }
   return nullptr;
 }
 
-Handle<Code> Builtins::CallFunction(ConvertReceiverMode mode) {
+Handle<CodeT> Builtins::CallFunction(ConvertReceiverMode mode) {
   switch (mode) {
     case ConvertReceiverMode::kNullOrUndefined:
       return code_handle(Builtin::kCallFunction_ReceiverIsNullOrUndefined);
@@ -131,7 +133,7 @@ Handle<Code> Builtins::CallFunction(ConvertReceiverMode mode) {
   UNREACHABLE();
 }
 
-Handle<Code> Builtins::Call(ConvertReceiverMode mode) {
+Handle<CodeT> Builtins::Call(ConvertReceiverMode mode) {
   switch (mode) {
     case ConvertReceiverMode::kNullOrUndefined:
       return code_handle(Builtin::kCall_ReceiverIsNullOrUndefined);
@@ -143,7 +145,7 @@ Handle<Code> Builtins::Call(ConvertReceiverMode mode) {
   UNREACHABLE();
 }
 
-Handle<Code> Builtins::NonPrimitiveToPrimitive(ToPrimitiveHint hint) {
+Handle<CodeT> Builtins::NonPrimitiveToPrimitive(ToPrimitiveHint hint) {
   switch (hint) {
     case ToPrimitiveHint::kDefault:
       return code_handle(Builtin::kNonPrimitiveToPrimitive_Default);
@@ -155,7 +157,7 @@ Handle<Code> Builtins::NonPrimitiveToPrimitive(ToPrimitiveHint hint) {
   UNREACHABLE();
 }
 
-Handle<Code> Builtins::OrdinaryToPrimitive(OrdinaryToPrimitiveHint hint) {
+Handle<CodeT> Builtins::OrdinaryToPrimitive(OrdinaryToPrimitiveHint hint) {
   switch (hint) {
     case OrdinaryToPrimitiveHint::kNumber:
       return code_handle(Builtin::kOrdinaryToPrimitive_Number);
@@ -177,21 +179,24 @@ FullObjectSlot Builtins::builtin_tier0_slot(Builtin builtin) {
   return FullObjectSlot(location);
 }
 
-void Builtins::set_code(Builtin builtin, Code code) {
+void Builtins::set_code(Builtin builtin, CodeT code) {
   DCHECK_EQ(builtin, code.builtin_id());
+  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
+    DCHECK_EQ(builtin, FromCodeT(code).builtin_id());
+  }
   DCHECK(Internals::HasHeapObjectTag(code.ptr()));
   // The given builtin may be uninitialized thus we cannot check its type here.
   isolate_->builtin_table()[Builtins::ToInt(builtin)] = code.ptr();
 }
 
-Code Builtins::code(Builtin builtin) {
+CodeT Builtins::code(Builtin builtin) {
   Address ptr = isolate_->builtin_table()[Builtins::ToInt(builtin)];
-  return Code::cast(Object(ptr));
+  return CodeT::cast(Object(ptr));
 }
 
-Handle<Code> Builtins::code_handle(Builtin builtin) {
+Handle<CodeT> Builtins::code_handle(Builtin builtin) {
   Address* location = &isolate_->builtin_table()[Builtins::ToInt(builtin)];
-  return Handle<Code>(location);
+  return Handle<CodeT>(location);
 }
 
 // static
@@ -227,7 +232,7 @@ CallInterfaceDescriptor Builtins::CallInterfaceDescriptorFor(Builtin builtin) {
 
 // static
 Callable Builtins::CallableFor(Isolate* isolate, Builtin builtin) {
-  Handle<Code> code = isolate->builtins()->code_handle(builtin);
+  Handle<CodeT> code = isolate->builtins()->code_handle(builtin);
   return Callable{code, CallInterfaceDescriptorFor(builtin)};
 }
 
@@ -250,12 +255,12 @@ void Builtins::PrintBuiltinCode() {
   for (Builtin builtin = Builtins::kFirst; builtin <= Builtins::kLast;
        ++builtin) {
     const char* builtin_name = name(builtin);
-    Handle<Code> code = code_handle(builtin);
     if (PassesFilter(base::CStrVector(builtin_name),
                      base::CStrVector(FLAG_print_builtin_code_filter))) {
       CodeTracer::Scope trace_scope(isolate_->GetCodeTracer());
       OFStream os(trace_scope.file());
-      code->Disassemble(builtin_name, os, isolate_);
+      Code builtin_code = FromCodeT(code(builtin));
+      builtin_code.Disassemble(builtin_name, os, isolate_);
       os << "\n";
     }
   }
@@ -268,7 +273,7 @@ void Builtins::PrintBuiltinSize() {
        ++builtin) {
     const char* builtin_name = name(builtin);
     const char* kind = KindNameOf(builtin);
-    Code code = Builtins::code(builtin);
+    Code code = FromCodeT(Builtins::code(builtin));
     PrintF(stdout, "%s Builtin, %s, %d\n", kind, builtin_name,
            code.InstructionSize());
   }
@@ -336,14 +341,16 @@ void Builtins::EmitCodeCreateEvents(Isolate* isolate) {
   int i = 0;
   HandleScope scope(isolate);
   for (; i < ToInt(Builtin::kFirstBytecodeHandler); i++) {
-    Handle<AbstractCode> code(AbstractCode::cast(Object(builtins[i])), isolate);
+    Code builtin_code = FromCodeT(CodeT::cast(Object(builtins[i])));
+    Handle<AbstractCode> code(AbstractCode::cast(builtin_code), isolate);
     PROFILE(isolate, CodeCreateEvent(CodeEventListener::BUILTIN_TAG, code,
                                      Builtins::name(FromInt(i))));
   }
 
   STATIC_ASSERT(kLastBytecodeHandlerPlusOne == kBuiltinCount);
   for (; i < kBuiltinCount; i++) {
-    Handle<AbstractCode> code(AbstractCode::cast(Object(builtins[i])), isolate);
+    Code builtin_code = FromCodeT(CodeT::cast(Object(builtins[i])));
+    Handle<AbstractCode> code(AbstractCode::cast(builtin_code), isolate);
     interpreter::Bytecode bytecode =
         builtin_metadata[i].data.bytecode_and_scale.bytecode;
     interpreter::OperandScale scale =
@@ -373,7 +380,7 @@ class OffHeapTrampolineGenerator {
       FrameScope scope(&masm_, StackFrame::NO_FRAME_TYPE);
       if (type == TrampolineType::kJump) {
         masm_.CodeEntry();
-        masm_.JumpToInstructionStream(off_heap_entry);
+        masm_.JumpToOffHeapInstructionStream(off_heap_entry);
       } else {
         DCHECK_EQ(type, TrampolineType::kAbort);
         masm_.Trap();

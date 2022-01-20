@@ -15,7 +15,6 @@
 #include "src/objects/foreign-inl.h"
 #include "src/objects/js-weak-refs.h"
 #include "src/objects/objects-inl.h"
-#include "src/objects/stack-frame-info.h"
 
 namespace v8 {
 
@@ -317,7 +316,24 @@ inline bool V8_EXPORT TryToCopyAndConvertArrayToCppBuffer(Local<Array> src,
 
 namespace internal {
 
+void HandleScopeImplementer::EnterContext(Context context) {
+  DCHECK_EQ(entered_contexts_.capacity(), is_microtask_context_.capacity());
+  DCHECK_EQ(entered_contexts_.size(), is_microtask_context_.size());
+  DCHECK(context.IsNativeContext());
+  entered_contexts_.push_back(context);
+  is_microtask_context_.push_back(0);
+}
+
+void HandleScopeImplementer::EnterMicrotaskContext(Context context) {
+  DCHECK_EQ(entered_contexts_.capacity(), is_microtask_context_.capacity());
+  DCHECK_EQ(entered_contexts_.size(), is_microtask_context_.size());
+  DCHECK(context.IsNativeContext());
+  entered_contexts_.push_back(context);
+  is_microtask_context_.push_back(1);
+}
+
 Handle<Context> HandleScopeImplementer::LastEnteredContext() {
+  DCHECK_EQ(entered_contexts_.capacity(), is_microtask_context_.capacity());
   DCHECK_EQ(entered_contexts_.size(), is_microtask_context_.size());
 
   for (size_t i = 0; i < entered_contexts_.size(); ++i) {

@@ -18,6 +18,7 @@ namespace internal {
   T(DebuggerLoading, "Error loading debugger")                                 \
   T(DefaultOptionsMissing, "Internal % error. Default options are missing.")   \
   T(DeletePrivateField, "Private fields can not be deleted")                   \
+  T(PlaceholderOnly, "%")                                                      \
   T(UncaughtException, "Uncaught %")                                           \
   T(Unsupported, "Not supported")                                              \
   T(WrongServiceType, "Internal error, wrong service type: %")                 \
@@ -37,7 +38,6 @@ namespace internal {
   T(AwaitNotInAsyncContext,                                                    \
     "await is only valid in async functions and the top level bodies of "      \
     "modules")                                                                 \
-  T(AwaitNotInAsyncFunction, "await is only valid in async function")          \
   T(AwaitNotInDebugEvaluate,                                                   \
     "await can not be used when evaluating code "                              \
     "while paused in the debugger")                                            \
@@ -86,6 +86,7 @@ namespace internal {
   T(DeclarationMissingInitializer, "Missing initializer in % declaration")     \
   T(DefineDisallowed, "Cannot define property %, object is not extensible")    \
   T(DetachedOperation, "Cannot perform % on a detached ArrayBuffer")           \
+  T(DoNotUse, "Do not use %; %")                                               \
   T(DuplicateTemplateProperty, "Object template has duplicate property '%'")   \
   T(ExtendsValueNotConstructor,                                                \
     "Class extends value % is not a constructor or null")                      \
@@ -105,6 +106,7 @@ namespace internal {
   T(InstanceofNonobjectProto,                                                  \
     "Function has non-object prototype '%' in instanceof check")               \
   T(InvalidArgument, "invalid_argument")                                       \
+  T(InvalidArgumentForTemporal, "Invalid argument for Temporal %")             \
   T(InvalidInOperatorUse, "Cannot use 'in' operator to search for '%' in %")   \
   T(InvalidRegExpExecResult,                                                   \
     "RegExp exec method returned something other than an Object or null")      \
@@ -321,6 +323,9 @@ namespace internal {
     "Invalid property descriptor. Cannot both specify accessors and a value "  \
     "or writable attribute, %")                                                \
   T(VarRedeclaration, "Identifier '%' has already been declared")              \
+  T(VarNotAllowedInEvalScope,                                                  \
+    "Identifier '%' cannot be declared with 'var' in current evaluation "      \
+    "scope, consider trying 'let' instead")                                    \
   T(WrongArgs, "%: Arguments list has wrong type")                             \
   /* ReferenceError */                                                         \
   T(NotDefined, "% is not defined")                                            \
@@ -343,11 +348,12 @@ namespace internal {
   T(Invalid, "Invalid % : %")                                                  \
   T(InvalidArrayLength, "Invalid array length")                                \
   T(InvalidAtomicAccessIndex, "Invalid atomic access index")                   \
+  T(InvalidCalendar, "Invalid calendar specified: %")                          \
   T(InvalidCodePoint, "Invalid code point %")                                  \
   T(InvalidCountValue, "Invalid count value")                                  \
   T(InvalidDataViewAccessorOffset,                                             \
     "Offset is outside the bounds of the DataView")                            \
-  T(InvalidDataViewLength, "Invalid DataView length %")                        \
+  T(InvalidDataViewLength, "Invalid DataView length")                          \
   T(InvalidOffset, "Start offset % is outside the bounds of the buffer")       \
   T(InvalidHint, "Invalid hint: %")                                            \
   T(InvalidIndex, "Invalid value: not (convertible to) a safe integer")        \
@@ -356,6 +362,7 @@ namespace internal {
   T(InvalidWeakSetValue, "Invalid value used in weak set")                     \
   T(InvalidStringLength, "Invalid string length")                              \
   T(InvalidTimeValue, "Invalid time value")                                    \
+  T(InvalidTimeValueForTemporal, "Invalid time value for Temporal %")          \
   T(InvalidTimeZone, "Invalid time zone specified: %")                         \
   T(InvalidTypedArrayAlignment, "% of % should be a multiple of %")            \
   T(InvalidTypedArrayIndex, "Invalid typed array index")                       \
@@ -442,7 +449,8 @@ namespace internal {
     "Invalid module export name: contains unpaired surrogate")                 \
   T(InvalidRegExpFlags, "Invalid flags supplied to RegExp constructor '%'")    \
   T(InvalidOrUnexpectedToken, "Invalid or unexpected token")                   \
-  T(InvalidPrivateBrand, "Object must be an instance of class %")              \
+  T(InvalidPrivateBrandInstance, "Receiver must be an instance of class %")    \
+  T(InvalidPrivateBrandStatic, "Receiver must be class %")                     \
   T(InvalidPrivateBrandReinitialization,                                       \
     "Cannot initialize private methods of class % twice on the same object")   \
   T(InvalidPrivateFieldReinitialization,                                       \
@@ -632,7 +640,9 @@ namespace internal {
   T(OptionalChainingNoSuper, "Invalid optional chain from super property")     \
   T(OptionalChainingNoTemplate, "Invalid tagged template on optional chain")   \
   /* AggregateError */                                                         \
-  T(AllPromisesRejected, "All promises were rejected")
+  T(AllPromisesRejected, "All promises were rejected")                         \
+  /* Web snapshots */                                                          \
+  T(WebSnapshotError, "Web snapshot failed: %")
 
 enum class MessageTemplate {
 #define TEMPLATE(NAME, STRING) k##NAME,

@@ -96,6 +96,7 @@ class Symbol;
   V(Map, one_closure_cell_map, OneClosureCellMap)                              \
   V(Map, ordered_hash_map_map, OrderedHashMapMap)                              \
   V(Map, ordered_hash_set_map, OrderedHashSetMap)                              \
+  V(Map, name_to_index_hash_table_map, NameToIndexHashTableMap)                \
   V(Map, ordered_name_dictionary_map, OrderedNameDictionaryMap)                \
   V(Map, preparse_data_map, PreparseDataMap)                                   \
   V(Map, property_array_map, PropertyArrayMap)                                 \
@@ -111,11 +112,12 @@ class Symbol;
   V(Map, source_text_module_map, SourceTextModuleMap)                          \
   V(Map, swiss_name_dictionary_map, SwissNameDictionaryMap)                    \
   V(Map, synthetic_module_map, SyntheticModuleMap)                             \
+  IF_WASM(V, Map, wasm_api_function_ref_map, WasmApiFunctionRefMap)            \
   IF_WASM(V, Map, wasm_capi_function_data_map, WasmCapiFunctionDataMap)        \
   IF_WASM(V, Map, wasm_exported_function_data_map,                             \
           WasmExportedFunctionDataMap)                                         \
+  IF_WASM(V, Map, wasm_internal_function_map, WasmInternalFunctionMap)         \
   IF_WASM(V, Map, wasm_js_function_data_map, WasmJSFunctionDataMap)            \
-  IF_WASM(V, Map, wasm_api_function_ref_map, WasmApiFunctionRefMap)            \
   IF_WASM(V, Map, wasm_type_info_map, WasmTypeInfoMap)                         \
   V(Map, weak_fixed_array_map, WeakFixedArrayMap)                              \
   V(Map, weak_array_list_map, WeakArrayListMap)                                \
@@ -142,6 +144,14 @@ class Symbol;
     UncachedExternalOneByteInternalizedStringMap)                              \
   V(Map, uncached_external_one_byte_string_map,                                \
     UncachedExternalOneByteStringMap)                                          \
+  V(Map, shared_one_byte_string_map, SharedOneByteStringMap)                   \
+  V(Map, shared_string_map, SharedStringMap)                                   \
+  V(Map, shared_thin_one_byte_string_map, SharedThinOneByteStringMap)          \
+  V(Map, shared_thin_string_map, SharedThinStringMap)                          \
+  V(Map, seq_string_migration_sentinel_map,                                    \
+    TwoByteSeqStringMigrationSentinelMap)                                      \
+  V(Map, one_byte_seq_string_migration_sentinel_map,                           \
+    OneByteSeqStringMigrationSentinelMap)                                      \
   /* Oddball maps */                                                           \
   V(Map, undefined_map, UndefinedMap)                                          \
   V(Map, the_hole_map, TheHoleMap)                                             \
@@ -308,7 +318,9 @@ class Symbol;
   V(Object, pending_optimize_for_test_bytecode,                            \
     PendingOptimizeForTestBytecode)                                        \
   V(ArrayList, basic_block_profiling_data, BasicBlockProfilingData)        \
-  V(WeakArrayList, shared_wasm_memories, SharedWasmMemories)
+  V(WeakArrayList, shared_wasm_memories, SharedWasmMemories)               \
+  IF_WASM(V, HeapObject, active_continuation, ActiveContinuation)          \
+  IF_WASM(V, HeapObject, active_suspender, ActiveSuspender)
 
 // Entries in this list are limited to Smis and are not visited during GC.
 #define SMI_ROOT_LIST(V)                                                       \

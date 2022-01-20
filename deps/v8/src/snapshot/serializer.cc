@@ -26,6 +26,9 @@ namespace internal {
 
 Serializer::Serializer(Isolate* isolate, Snapshot::SerializerFlags flags)
     : isolate_(isolate),
+#if V8_COMPRESS_POINTERS
+      cage_base_(isolate),
+#endif  // V8_COMPRESS_POINTERS
       hot_objects_(isolate->heap()),
       reference_map_(isolate),
       external_reference_encoder_(isolate),
@@ -528,21 +531,21 @@ void Serializer::ObjectSerializer::SerializeJSArrayBuffer() {
   int32_t byte_length = static_cast<int32_t>(buffer->byte_length());
   ArrayBufferExtension* extension = buffer->extension();
 
-  // The embedder-allocated backing store only exists for the off-heap case.
-  if (backing_store != nullptr) {
+  // Only serialize non-empty backing stores.
+  if (buffer->IsEmpty()) {
+    buffer->SetBackingStoreRefForSerialization(kEmptyBackingStoreRefSentinel);
+  } else {
     uint32_t ref = SerializeBackingStore(backing_store, byte_length);
     buffer->SetBackingStoreRefForSerialization(ref);
 
     // Ensure deterministic output by setting extension to null during
     // serialization.
     buffer->set_extension(nullptr);
-  } else {
-    buffer->SetBackingStoreRefForSerialization(kNullRefSentinel);
   }
 
   SerializeObject();
 
-  buffer->set_backing_store(backing_store);
+  buffer->set_backing_store(isolate(), backing_store);
   buffer->set_extension(extension);
 }
 
@@ -556,13 +559,13 @@ void Serializer::ObjectSerializer::SerializeExternalString() {
   if (serializer_->external_reference_encoder_.TryEncode(resource).To(
           &reference)) {
     DCHECK(reference.is_from_api());
-#ifdef V8_HEAP_SANDBOX
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
     uint32_t external_pointer_entry =
         string->GetResourceRefForDeserialization();
 #endif
     string->SetResourceRefForSerialization(reference.index());
     SerializeObject();
-#ifdef V8_HEAP_SANDBOX
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
     string->SetResourceRefForSerialization(external_pointer_entry);
 #else
     string->set_address_as_resource(isolate(), resource);
@@ -764,8 +767,8 @@ SnapshotSpace GetSnapshotSpace(Handle<HeapObject> object) {
 }  // namespace
 
 void Serializer::ObjectSerializer::SerializeObject() {
-  int size = object_->Size();
-  Map map = object_->map();
+  Map map = object_->map(serializer_->cage_base());
+  int size = object_->SizeFromMap(map);
 
   // Descriptor arrays have complex element weakness, that is dependent on the
   // maps pointing to them. During deserialization, this can cause them to get
@@ -900,7 +903,7 @@ void Serializer::ObjectSerializer::VisitCodePointer(HeapObject host,
   HandleScope scope(isolate());
   DisallowGarbageCollection no_gc;
 
-#if V8_EXTERNAL_CODE_SPACE
+#ifdef V8_EXTERNAL_CODE_SPACE
   PtrComprCageBase code_cage_base(isolate()->code_cage_base());
 #else
   PtrComprCageBase code_cage_base(isolate());
@@ -943,14 +946,14 @@ void Serializer::ObjectSerializer::OutputExternalReference(Address target,
     sink_->Put(FixedRawDataWithSize::Encode(size_in_tagged), "FixedRawData");
     sink_->PutRaw(reinterpret_cast<byte*>(&target), target_size, "Bytes");
   } else if (encoded_reference.is_from_api()) {
-    if (V8_HEAP_SANDBOX_BOOL && sandboxify) {
+    if (V8_SANDBOXED_EXTERNAL_POINTERS_BOOL && sandboxify) {
       sink_->Put(kSandboxedApiReference, "SandboxedApiRef");
     } else {
       sink_->Put(kApiReference, "ApiRef");
     }
     sink_->PutInt(encoded_reference.index(), "reference index");
   } else {
-    if (V8_HEAP_SANDBOX_BOOL && sandboxify) {
+    if (V8_SANDBOXED_EXTERNAL_POINTERS_BOOL && sandboxify) {
       sink_->Put(kSandboxedExternalReference, "SandboxedExternalRef");
     } else {
       sink_->Put(kExternalReference, "ExternalRef");
@@ -1046,7 +1049,7 @@ void Serializer::ObjectSerializer::VisitOffHeapTarget(Code host,
   Address addr = rinfo->target_off_heap_target();
   CHECK_NE(kNullAddress, addr);
 
-  Builtin builtin = InstructionStream::TryLookupCode(isolate(), addr);
+  Builtin builtin = OffHeapInstructionStream::TryLookupCode(isolate(), addr);
   CHECK(Builtins::IsBuiltinId(builtin));
   CHECK(Builtins::IsIsolateIndependent(builtin));
 

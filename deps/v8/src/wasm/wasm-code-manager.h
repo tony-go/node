@@ -124,7 +124,8 @@ struct WasmModule;
   V(WasmAllocateFreshRtt)                 \
   V(WasmAllocateStructWithRtt)            \
   V(WasmSubtypeCheck)                     \
-  V(WasmOnStackReplace)
+  V(WasmOnStackReplace)                   \
+  V(WasmSuspend)
 
 // Sorted, disjoint and non-overlapping memory regions. A region is of the
 // form [start, end). So there's no [start, end), [end, other_end),
@@ -292,7 +293,11 @@ class V8_EXPORT_PRIVATE WasmCode final {
   uint32_t raw_tagged_parameter_slots_for_serialization() const {
     return tagged_parameter_slots_;
   }
+
   bool is_liftoff() const { return tier() == ExecutionTier::kLiftoff; }
+
+  bool is_turbofan() const { return tier() == ExecutionTier::kTurbofan; }
+
   bool contains(Address pc) const {
     return reinterpret_cast<Address>(instructions_) <= pc &&
            pc < reinterpret_cast<Address>(instructions_ + instructions_size_);
@@ -562,6 +567,8 @@ class WasmCodeAllocator {
   // Retrieve the number of separately reserved code spaces.
   // Hold the {NativeModule}'s {allocation_mutex_} when calling this method.
   size_t GetNumCodeSpaces() const;
+
+  Counters* counters() const { return async_counters_.get(); }
 
  private:
   // Sentinel value to be used for {AllocateForCodeInRegion} for specifying no
@@ -839,9 +846,9 @@ class V8_EXPORT_PRIVATE NativeModule final {
   // Get or create the debug info for this NativeModule.
   DebugInfo* GetDebugInfo();
 
-  uint32_t* num_liftoff_function_calls_array() {
-    return num_liftoff_function_calls_.get();
-  }
+  uint32_t* tiering_budget_array() { return tiering_budgets_.get(); }
+
+  Counters* counters() const { return code_allocator_.counters(); }
 
  private:
   friend class WasmCode;
@@ -944,7 +951,7 @@ class V8_EXPORT_PRIVATE NativeModule final {
   std::unique_ptr<WasmImportWrapperCache> import_wrapper_cache_;
 
   // Array to handle number of function calls.
-  std::unique_ptr<uint32_t[]> num_liftoff_function_calls_;
+  std::unique_ptr<uint32_t[]> tiering_budgets_;
 
   // This mutex protects concurrent calls to {AddCode} and friends.
   // TODO(dlehmann): Revert this to a regular {Mutex} again.
@@ -1043,17 +1050,22 @@ class V8_EXPORT_PRIVATE WasmCodeManager final {
   // lock when calling this method.
   void SetThreadWritable(bool writable);
 
-  // Returns true if there is PKU support, false otherwise.
+  // Returns true if there is hardware support for PKU. Use
+  // {MemoryProtectionKeysEnabled} to also check if PKU usage is enabled via
+  // flags.
   bool HasMemoryProtectionKeySupport() const;
+
+  // Returns true if PKU should be used.
+  bool MemoryProtectionKeysEnabled() const;
 
   // Returns {true} if the memory protection key is write-enabled for the
   // current thread.
   // Can only be called if {HasMemoryProtectionKeySupport()} is {true}.
   bool MemoryProtectionKeyWritable() const;
 
-  // This allocates a memory protection key (if none was allocated before),
-  // independent of the --wasm-memory-protection-keys flag.
-  void InitializeMemoryProtectionKeyForTesting();
+  // Initialize the current thread's permissions for the memory protection key,
+  // if we have support.
+  void InitializeMemoryProtectionKeyPermissionsIfSupported() const;
 
  private:
   friend class WasmCodeAllocator;

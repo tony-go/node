@@ -49,6 +49,7 @@ namespace internal {
 // Version 12: regexp and string objects share normal string encoding
 // Version 13: host objects have an explicit tag (rather than handling all
 //             unknown tags)
+// Version 14: flags for JSArrayBufferViews
 //
 // WARNING: Increasing this value is a change which cannot safely be rolled
 // back without breaking compatibility with data stored on disk. It is
@@ -57,7 +58,7 @@ namespace internal {
 //
 // Recent changes are routinely reverted in preparation for branch, and this
 // has been the cause of at least one bug in the past.
-static const uint32_t kLatestVersion = 13;
+static const uint32_t kLatestVersion = 14;
 static_assert(kLatestVersion == v8::CurrentValueSerializerFormatVersion(),
               "Exported format version must match latest version.");
 
@@ -413,7 +414,8 @@ Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
   }
 
   DCHECK(object->IsHeapObject());
-  switch (HeapObject::cast(*object).map().instance_type()) {
+  InstanceType instance_type = HeapObject::cast(*object).map().instance_type();
+  switch (instance_type) {
     case ODDBALL_TYPE:
       WriteOddball(Oddball::cast(*object));
       return ThrowIfOutOfMemory();
@@ -433,7 +435,7 @@ Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
       Handle<JSArrayBufferView> view = Handle<JSArrayBufferView>::cast(object);
       if (!id_map_.Find(view) && !treat_array_buffer_views_as_host_objects_) {
         Handle<JSArrayBuffer> buffer(
-            view->IsJSTypedArray()
+            InstanceTypeChecker::IsJSTypedArray(instance_type)
                 ? Handle<JSTypedArray>::cast(view)->GetBuffer()
                 : handle(JSArrayBuffer::cast(view->buffer()), isolate_));
         if (!WriteJSReceiver(buffer).FromMaybe(false)) return Nothing<bool>();
@@ -441,10 +443,10 @@ Maybe<bool> ValueSerializer::WriteObject(Handle<Object> object) {
       return WriteJSReceiver(view);
     }
     default:
-      if (object->IsString()) {
+      if (InstanceTypeChecker::IsString(instance_type)) {
         WriteString(Handle<String>::cast(object));
         return ThrowIfOutOfMemory();
-      } else if (object->IsJSReceiver()) {
+      } else if (InstanceTypeChecker::IsJSReceiver(instance_type)) {
         return WriteJSReceiver(Handle<JSReceiver>::cast(object));
       } else {
         ThrowDataCloneError(MessageTemplate::kDataCloneError, object);
@@ -623,7 +625,7 @@ Maybe<bool> ValueSerializer::WriteJSObject(Handle<JSObject> object) {
     if (V8_LIKELY(!map_changed)) map_changed = *map != object->map();
     if (V8_LIKELY(!map_changed &&
                   details.location() == PropertyLocation::kField)) {
-      DCHECK_EQ(kData, details.kind());
+      DCHECK_EQ(PropertyKind::kData, details.kind());
       FieldIndex field_index = FieldIndex::ForDescriptor(*map, i);
       value = JSObject::FastPropertyAt(object, details.representation(),
                                        field_index);
@@ -664,6 +666,7 @@ Maybe<bool> ValueSerializer::WriteJSObjectSlow(Handle<JSObject> object) {
 }
 
 Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
+  PtrComprCageBase cage_base(isolate_);
   uint32_t length = 0;
   bool valid_length = array->length().ToArrayLength(&length);
   DCHECK(valid_length);
@@ -675,7 +678,7 @@ Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
   // existed (as only indices which were enumerable own properties at this point
   // should be serialized).
   const bool should_serialize_densely =
-      array->HasFastElements() && !array->HasHoleyElements();
+      array->HasFastElements(cage_base) && !array->HasHoleyElements(cage_base);
 
   if (should_serialize_densely) {
     DCHECK_LE(length, static_cast<uint32_t>(FixedArray::kMaxLength));
@@ -685,35 +688,36 @@ Maybe<bool> ValueSerializer::WriteJSArray(Handle<JSArray> array) {
 
     // Fast paths. Note that PACKED_ELEMENTS in particular can bail due to the
     // structure of the elements changing.
-    switch (array->GetElementsKind()) {
+    switch (array->GetElementsKind(cage_base)) {
       case PACKED_SMI_ELEMENTS: {
-        Handle<FixedArray> elements(FixedArray::cast(array->elements()),
-                                    isolate_);
-        for (; i < length; i++) WriteSmi(Smi::cast(elements->get(i)));
+        DisallowGarbageCollection no_gc;
+        FixedArray elements = FixedArray::cast(array->elements());
+        for (i = 0; i < length; i++)
+          WriteSmi(Smi::cast(elements.get(cage_base, i)));
         break;
       }
       case PACKED_DOUBLE_ELEMENTS: {
         // Elements are empty_fixed_array, not a FixedDoubleArray, if the array
         // is empty. No elements to encode in this case anyhow.
         if (length == 0) break;
-        Handle<FixedDoubleArray> elements(
-            FixedDoubleArray::cast(array->elements()), isolate_);
-        for (; i < length; i++) {
+        DisallowGarbageCollection no_gc;
+        FixedDoubleArray elements = FixedDoubleArray::cast(array->elements());
+        for (i = 0; i < length; i++) {
           WriteTag(SerializationTag::kDouble);
-          WriteDouble(elements->get_scalar(i));
+          WriteDouble(elements.get_scalar(i));
         }
         break;
       }
       case PACKED_ELEMENTS: {
-        Handle<Object> old_length(array->length(), isolate_);
+        Handle<Object> old_length(array->length(cage_base), isolate_);
         for (; i < length; i++) {
-          if (array->length() != *old_length ||
-              array->GetElementsKind() != PACKED_ELEMENTS) {
+          if (array->length(cage_base) != *old_length ||
+              array->GetElementsKind(cage_base) != PACKED_ELEMENTS) {
             // Fall back to slow path.
             break;
           }
-          Handle<Object> element(FixedArray::cast(array->elements()).get(i),
-                                 isolate_);
+          Handle<Object> element(
+              FixedArray::cast(array->elements()).get(cage_base, i), isolate_);
           if (!WriteObject(element).FromMaybe(false)) return Nothing<bool>();
         }
         break;
@@ -935,6 +939,7 @@ Maybe<bool> ValueSerializer::WriteJSArrayBufferView(JSArrayBufferView view) {
   WriteVarint(static_cast<uint8_t>(tag));
   WriteVarint(static_cast<uint32_t>(view.byte_offset()));
   WriteVarint(static_cast<uint32_t>(view.byte_length()));
+  WriteVarint(static_cast<uint32_t>(view.bit_field()));
   return ThrowIfOutOfMemory();
 }
 
@@ -1859,11 +1864,15 @@ MaybeHandle<JSArrayBufferView> ValueDeserializer::ReadJSArrayBufferView(
   uint8_t tag = 0;
   uint32_t byte_offset = 0;
   uint32_t byte_length = 0;
+  uint32_t flags = 0;
   if (!ReadVarint<uint8_t>().To(&tag) ||
       !ReadVarint<uint32_t>().To(&byte_offset) ||
       !ReadVarint<uint32_t>().To(&byte_length) ||
       byte_offset > buffer_byte_length ||
       byte_length > buffer_byte_length - byte_offset) {
+    return MaybeHandle<JSArrayBufferView>();
+  }
+  if (version_ >= 14 && !ReadVarint<uint32_t>().To(&flags)) {
     return MaybeHandle<JSArrayBufferView>();
   }
   uint32_t id = next_id_++;
@@ -1875,6 +1884,7 @@ MaybeHandle<JSArrayBufferView> ValueDeserializer::ReadJSArrayBufferView(
       Handle<JSDataView> data_view =
           isolate_->factory()->NewJSDataView(buffer, byte_offset, byte_length);
       AddObjectWithID(id, data_view);
+      data_view->set_bit_field(flags);
       return data_view;
     }
 #define TYPED_ARRAY_CASE(Type, type, TYPE, ctype) \
@@ -1891,6 +1901,7 @@ MaybeHandle<JSArrayBufferView> ValueDeserializer::ReadJSArrayBufferView(
   }
   Handle<JSTypedArray> typed_array = isolate_->factory()->NewJSTypedArray(
       external_array_type, buffer, byte_offset, byte_length / element_size);
+  typed_array->set_bit_field(flags);
   AddObjectWithID(id, typed_array);
   return typed_array;
 }
@@ -1965,20 +1976,15 @@ MaybeHandle<Object> ValueDeserializer::ReadJSError() {
     }
   }
 
-  Handle<Object> error;
+  Handle<JSObject> error;
   if (!ErrorUtils::Construct(isolate_, constructor, constructor, message,
                              options, SKIP_NONE, no_caller,
-                             ErrorUtils::StackTraceCollection::kNone)
+                             ErrorUtils::StackTraceCollection::kDisabled)
            .ToHandle(&error)) {
     return MaybeHandle<Object>();
   }
 
-  if (Object::SetProperty(
-          isolate_, error, isolate_->factory()->stack_trace_symbol(), stack,
-          StoreOrigin::kMaybeKeyed, Just(ShouldThrow::kThrowOnError))
-          .is_null()) {
-    return MaybeHandle<Object>();
-  }
+  ErrorUtils::SetFormattedStack(isolate_, error, stack);
   return error;
 }
 
@@ -2026,7 +2032,7 @@ MaybeHandle<WasmMemoryObject> ValueDeserializer::ReadWasmMemory() {
   }
 
   Handle<WasmMemoryObject> result =
-      WasmMemoryObject::New(isolate_, buffer, maximum_pages);
+      WasmMemoryObject::New(isolate_, buffer, maximum_pages).ToHandleChecked();
 
   AddObjectWithID(id, result);
   return result;

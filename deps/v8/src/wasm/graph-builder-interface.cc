@@ -212,14 +212,14 @@ class WasmGraphBuildingInterface {
           nesting_depth++;
         }
       }
-      // If this loop is nested, the parent loop's is_innermost field needs to
-      // be false. If the last loop in loop_infos_ has less depth, it has to be
-      // the parent loop. If it does not, it means another loop has been found
-      // within the parent loop, and that loop will have set the parent's
-      // is_innermost to false, so we do not need to do anything.
+      // If this loop is nested, the parent loop's can_be_innermost field needs
+      // to be false. If the last loop in loop_infos_ has less depth, it has to
+      // be the parent loop. If it does not, it means another loop has been
+      // found within the parent loop, and that loop will have set the parent's
+      // can_be_innermost to false, so we do not need to do anything.
       if (nesting_depth > 0 &&
           loop_infos_.back().nesting_depth < nesting_depth) {
-        loop_infos_.back().is_innermost = false;
+        loop_infos_.back().can_be_innermost = false;
       }
       loop_infos_.emplace_back(loop_node, nesting_depth, true);
     }
@@ -442,11 +442,6 @@ class WasmGraphBuildingInterface {
   }
 
   void Trap(FullDecoder* decoder, TrapReason reason) {
-    ValueVector values;
-    if (emit_loop_exits()) {
-      BuildNestedLoopExits(decoder, decoder->control_depth() - 1, false,
-                           values);
-    }
     builder_->Trap(reason, decoder->position());
   }
 
@@ -695,7 +690,7 @@ class WasmGraphBuildingInterface {
 
     TFNode* success_control;
     TFNode* failure_control;
-    builder_->CompareToExternalFunctionAtIndex(
+    builder_->CompareToInternalFunctionAtIndex(
         func_ref.node, expected_function_index, &success_control,
         &failure_control);
     TFNode* initial_effect = effect();
@@ -766,7 +761,7 @@ class WasmGraphBuildingInterface {
 
     TFNode* success_control;
     TFNode* failure_control;
-    builder_->CompareToExternalFunctionAtIndex(
+    builder_->CompareToInternalFunctionAtIndex(
         func_ref.node, expected_function_index, &success_control,
         &failure_control);
     TFNode* initial_effect = effect();
@@ -784,7 +779,8 @@ class WasmGraphBuildingInterface {
                  args);
   }
 
-  void BrOnNull(FullDecoder* decoder, const Value& ref_object, uint32_t depth) {
+  void BrOnNull(FullDecoder* decoder, const Value& ref_object, uint32_t depth,
+                bool pass_null_along_branch, Value* result_on_fallthrough) {
     SsaEnv* false_env = ssa_env_;
     SsaEnv* true_env = Split(decoder->zone(), false_env);
     false_env->SetNotMerged();
@@ -792,8 +788,9 @@ class WasmGraphBuildingInterface {
                        &false_env->control);
     builder_->SetControl(false_env->control);
     SetEnv(true_env);
-    BrOrRet(decoder, depth, 1);
+    BrOrRet(decoder, depth, pass_null_along_branch ? 0 : 1);
     SetEnv(false_env);
+    result_on_fallthrough->node = ref_object.node;
   }
 
   void BrOnNonNull(FullDecoder* decoder, const Value& ref_object,
@@ -843,7 +840,7 @@ class WasmGraphBuildingInterface {
     CheckForException(decoder,
                       builder_->Throw(imm.index, imm.tag, base::VectorOf(args),
                                       decoder->position()));
-    TerminateThrow(decoder);
+    builder_->TerminateThrow(effect(), control());
   }
 
   void Rethrow(FullDecoder* decoder, Control* block) {
@@ -851,7 +848,7 @@ class WasmGraphBuildingInterface {
     TFNode* exception = block->try_info->exception;
     DCHECK_NOT_NULL(exception);
     CheckForException(decoder, builder_->Rethrow(exception));
-    TerminateThrow(decoder);
+    builder_->TerminateThrow(effect(), control());
   }
 
   void CatchException(FullDecoder* decoder,
@@ -908,7 +905,7 @@ class WasmGraphBuildingInterface {
         // We just throw to the caller here, so no need to generate IfSuccess
         // and IfFailure nodes.
         builder_->Rethrow(block->try_info->exception);
-        TerminateThrow(decoder);
+        builder_->TerminateThrow(effect(), control());
         return;
       }
       DCHECK(decoder->control_at(depth)->is_try());
@@ -1062,7 +1059,7 @@ class WasmGraphBuildingInterface {
                                              rtt.node, decoder->position());
     // array.new_with_rtt introduces a loop. Therefore, we have to mark the
     // immediately nesting loop (if any) as non-innermost.
-    if (!loop_infos_.empty()) loop_infos_.back().is_innermost = false;
+    if (!loop_infos_.empty()) loop_infos_.back().can_be_innermost = false;
   }
 
   void ArrayNewDefault(FullDecoder* decoder,
@@ -1251,6 +1248,29 @@ class WasmGraphBuildingInterface {
         br_depth, false);
   }
 
+  void RefIsArray(FullDecoder* decoder, const Value& object, Value* result) {
+    result->node = builder_->RefIsArray(object.node, object.type.is_nullable());
+  }
+
+  void RefAsArray(FullDecoder* decoder, const Value& object, Value* result) {
+    result->node = builder_->RefAsArray(object.node, object.type.is_nullable(),
+                                        decoder->position());
+  }
+
+  void BrOnArray(FullDecoder* decoder, const Value& object,
+                 Value* value_on_branch, uint32_t br_depth) {
+    BrOnCastAbs<&compiler::WasmGraphBuilder::BrOnArray>(
+        decoder, object, Value{nullptr, kWasmBottom}, value_on_branch, br_depth,
+        true);
+  }
+
+  void BrOnNonArray(FullDecoder* decoder, const Value& object,
+                    Value* value_on_fallthrough, uint32_t br_depth) {
+    BrOnCastAbs<&compiler::WasmGraphBuilder::BrOnArray>(
+        decoder, object, Value{nullptr, kWasmBottom}, value_on_fallthrough,
+        br_depth, false);
+  }
+
   void RefIsI31(FullDecoder* decoder, const Value& object, Value* result) {
     result->node = builder_->RefIsI31(object.node);
   }
@@ -1302,12 +1322,19 @@ class WasmGraphBuildingInterface {
         ->try_info;
   }
 
-  // Loop exits are only used during loop unrolling and are then removed, as
-  // they cannot be handled by later optimization stages. Since unrolling comes
-  // before inlining in the compilation pipeline, we should not emit loop exits
-  // in inlined functions. Also, we should not do so when unrolling is disabled.
+  // If {emit_loop_exits()} returns true, we need to emit LoopExit,
+  // LoopExitEffect, and LoopExit nodes whenever a control resp. effect resp.
+  // value escapes a loop. We emit loop exits in the following cases:
+  // - When popping the control of a loop.
+  // - At some nodes which connect to the graph's end. We do not always need to
+  //   emit loop exits for such nodes, since the wasm loop analysis algorithm
+  //   can handle a loop body which connects directly to the graph's end.
+  //   However, we need to emit them anyway for nodes that may be rewired to
+  //   different nodes during inlining. These are Return and TailCall nodes.
+  // - After IfFailure nodes.
+  // - When exiting a loop through Delegate.
   bool emit_loop_exits() {
-    return FLAG_wasm_loop_unrolling && inlined_status_ == kRegularFunction;
+    return FLAG_wasm_loop_unrolling || FLAG_wasm_loop_peeling;
   }
 
   void GetNodes(TFNode** nodes, Value* values, size_t count) {
@@ -1352,17 +1379,18 @@ class WasmGraphBuildingInterface {
     builder_->set_instance_cache(&env->instance_cache);
   }
 
-  V8_INLINE TFNode* CheckForException(FullDecoder* decoder, TFNode* node) {
-    if (node == nullptr) return nullptr;
+  TFNode* CheckForException(FullDecoder* decoder, TFNode* node) {
+    DCHECK_NOT_NULL(node);
 
+    // We need to emit IfSuccess/IfException nodes if this node throws and has
+    // an exception handler. An exception handler can either be a try-scope
+    // around this node, or if this function is being inlined, the IfException
+    // output of the inlined Call node.
     const bool inside_try_scope = decoder->current_catch() != -1;
-    if (!inside_try_scope) return node;
+    if (inlined_status_ != kInlinedHandledCall && !inside_try_scope) {
+      return node;
+    }
 
-    return CheckForExceptionImpl(decoder, node);
-  }
-
-  V8_NOINLINE TFNode* CheckForExceptionImpl(FullDecoder* decoder,
-                                            TFNode* node) {
     TFNode* if_success = nullptr;
     TFNode* if_exception = nullptr;
     if (!builder_->ThrowsException(node, &if_success, &if_exception)) {
@@ -1376,21 +1404,33 @@ class WasmGraphBuildingInterface {
     exception_env->control = if_exception;
     exception_env->effect = if_exception;
     SetEnv(exception_env);
-    TryInfo* try_info = current_try_info(decoder);
+
     if (emit_loop_exits()) {
       ValueVector values;
-      BuildNestedLoopExits(decoder, decoder->control_depth_of_current_catch(),
+      BuildNestedLoopExits(decoder,
+                           inside_try_scope
+                               ? decoder->control_depth_of_current_catch()
+                               : decoder->control_depth() - 1,
                            true, values, &if_exception);
     }
-    Goto(decoder, try_info->catch_env);
-    if (try_info->exception == nullptr) {
-      DCHECK_EQ(SsaEnv::kReached, try_info->catch_env->state);
-      try_info->exception = if_exception;
+    if (inside_try_scope) {
+      TryInfo* try_info = current_try_info(decoder);
+      Goto(decoder, try_info->catch_env);
+      if (try_info->exception == nullptr) {
+        DCHECK_EQ(SsaEnv::kReached, try_info->catch_env->state);
+        try_info->exception = if_exception;
+      } else {
+        DCHECK_EQ(SsaEnv::kMerged, try_info->catch_env->state);
+        try_info->exception = builder_->CreateOrMergeIntoPhi(
+            MachineRepresentation::kTaggedPointer, try_info->catch_env->control,
+            try_info->exception, if_exception);
+      }
     } else {
-      DCHECK_EQ(SsaEnv::kMerged, try_info->catch_env->state);
-      try_info->exception = builder_->CreateOrMergeIntoPhi(
-          MachineRepresentation::kTaggedPointer, try_info->catch_env->control,
-          try_info->exception, if_exception);
+      DCHECK_EQ(inlined_status_, kInlinedHandledCall);
+      // Leave the IfException/LoopExit node dangling. We will connect it during
+      // inlining to the handler of the inlined call.
+      // Note: We have to generate the handler now since we have no way of
+      // generating a LoopExit if needed in the inlining code.
     }
 
     SetEnv(success_env);
@@ -1634,6 +1674,18 @@ class WasmGraphBuildingInterface {
               const Value args[], Value returns[]) {
     size_t param_count = sig->parameter_count();
     size_t return_count = sig->return_count();
+
+    // Construct a function signature based on the real function parameters.
+    FunctionSig::Builder real_sig_builder(builder_->graph_zone(), return_count,
+                                          param_count);
+    for (size_t i = 0; i < param_count; i++) {
+      real_sig_builder.AddParam(args[i].type);
+    }
+    for (size_t i = 0; i < return_count; i++) {
+      real_sig_builder.AddReturn(sig->GetReturn(i));
+    }
+    FunctionSig* real_sig = real_sig_builder.Build();
+
     NodeVector arg_nodes(param_count + 1);
     base::SmallVector<TFNode*, 1> return_nodes(return_count);
     arg_nodes[0] = (call_info.call_mode() == CallInfo::kCallDirect)
@@ -1648,19 +1700,20 @@ class WasmGraphBuildingInterface {
         CheckForException(
             decoder, builder_->CallIndirect(
                          call_info.table_index(), call_info.sig_index(),
-                         base::VectorOf(arg_nodes),
+                         real_sig, base::VectorOf(arg_nodes),
                          base::VectorOf(return_nodes), decoder->position()));
         break;
       case CallInfo::kCallDirect:
         CheckForException(
-            decoder, builder_->CallDirect(
-                         call_info.callee_index(), base::VectorOf(arg_nodes),
-                         base::VectorOf(return_nodes), decoder->position()));
+            decoder, builder_->CallDirect(call_info.callee_index(), real_sig,
+                                          base::VectorOf(arg_nodes),
+                                          base::VectorOf(return_nodes),
+                                          decoder->position()));
         break;
       case CallInfo::kCallRef:
         CheckForException(
             decoder,
-            builder_->CallRef(sig, base::VectorOf(arg_nodes),
+            builder_->CallRef(real_sig, base::VectorOf(arg_nodes),
                               base::VectorOf(return_nodes),
                               call_info.null_check(), decoder->position()));
         break;
@@ -1676,6 +1729,17 @@ class WasmGraphBuildingInterface {
   void DoReturnCall(FullDecoder* decoder, CallInfo call_info,
                     const FunctionSig* sig, const Value args[]) {
     size_t arg_count = sig->parameter_count();
+
+    // Construct a function signature based on the real function parameters.
+    FunctionSig::Builder real_sig_builder(builder_->graph_zone(),
+                                          sig->return_count(), arg_count);
+    for (size_t i = 0; i < arg_count; i++) {
+      real_sig_builder.AddParam(args[i].type);
+    }
+    for (size_t i = 0; i < sig->return_count(); i++) {
+      real_sig_builder.AddReturn(sig->GetReturn(i));
+    }
+    FunctionSig* real_sig = real_sig_builder.Build();
 
     ValueVector arg_values(arg_count + 1);
     if (call_info.call_mode() == CallInfo::kCallDirect) {
@@ -1699,22 +1763,17 @@ class WasmGraphBuildingInterface {
 
     switch (call_info.call_mode()) {
       case CallInfo::kCallIndirect:
-        CheckForException(decoder,
-                          builder_->ReturnCallIndirect(
-                              call_info.table_index(), call_info.sig_index(),
-                              base::VectorOf(arg_nodes), decoder->position()));
+        builder_->ReturnCallIndirect(
+            call_info.table_index(), call_info.sig_index(), real_sig,
+            base::VectorOf(arg_nodes), decoder->position());
         break;
       case CallInfo::kCallDirect:
-        CheckForException(decoder,
-                          builder_->ReturnCall(call_info.callee_index(),
-                                               base::VectorOf(arg_nodes),
-                                               decoder->position()));
+        builder_->ReturnCall(call_info.callee_index(), real_sig,
+                             base::VectorOf(arg_nodes), decoder->position());
         break;
       case CallInfo::kCallRef:
-        CheckForException(
-            decoder, builder_->ReturnCallRef(sig, base::VectorOf(arg_nodes),
-                                             call_info.null_check(),
-                                             decoder->position()));
+        builder_->ReturnCallRef(real_sig, base::VectorOf(arg_nodes),
+                                call_info.null_check(), decoder->position());
         break;
     }
   }
@@ -1777,21 +1836,6 @@ class WasmGraphBuildingInterface {
     }
   }
 
-  void TerminateThrow(FullDecoder* decoder) {
-    if (emit_loop_exits()) {
-      SsaEnv* internal_env = ssa_env_;
-      SsaEnv* exit_env = Split(decoder->zone(), ssa_env_);
-      SetEnv(exit_env);
-      ValueVector stack_values;
-      BuildNestedLoopExits(decoder, decoder->control_depth(), false,
-                           stack_values);
-      builder_->TerminateThrow(effect(), control());
-      SetEnv(internal_env);
-    } else {
-      builder_->TerminateThrow(effect(), control());
-    }
-  }
-
   CheckForNull NullCheckFor(ValueType type) {
     DCHECK(type.is_object_reference());
     return (!FLAG_experimental_wasm_skip_null_checks && type.is_nullable())
@@ -1820,9 +1864,8 @@ DecodeResult BuildTFGraph(AccountingAllocator* allocator,
   if (node_origins) {
     builder->RemoveBytecodePositionDecorator();
   }
-  if (FLAG_wasm_loop_unrolling && inlined_status == kRegularFunction) {
-    *loop_infos = decoder.interface().loop_infos();
-  }
+  *loop_infos = decoder.interface().loop_infos();
+
   return decoder.toResult(nullptr);
 }
 

@@ -86,7 +86,7 @@ static constexpr size_t kDefaultDeadlineCheckInterval = 150u;
 
 template <size_t kDeadlineCheckInterval = kDefaultDeadlineCheckInterval,
           typename WorklistLocal, typename Callback>
-bool DrainWorklistWithBytesAndTimeDeadline(MarkingStateBase& marking_state,
+bool DrainWorklistWithBytesAndTimeDeadline(BasicMarkingState& marking_state,
                                            size_t marked_bytes_deadline,
                                            v8::base::TimeTicks time_deadline,
                                            WorklistLocal& worklist_local,
@@ -153,7 +153,7 @@ void MarkerBase::IncrementalMarkingTask::Run() {
   }
 }
 
-MarkerBase::MarkerBase(Key, HeapBase& heap, cppgc::Platform* platform,
+MarkerBase::MarkerBase(HeapBase& heap, cppgc::Platform* platform,
                        MarkingConfig config)
     : heap_(heap),
       config_(config),
@@ -240,11 +240,19 @@ void MarkerBase::StartMarking() {
         MarkingConfig::MarkingType::kIncrementalAndConcurrent) {
       mutator_marking_state_.Publish();
       concurrent_marker_->Start();
+      concurrent_marking_active_ = true;
     }
     incremental_marking_allocation_observer_ =
         std::make_unique<IncrementalMarkingAllocationObserver>(*this);
     heap().stats_collector()->RegisterObserver(
         incremental_marking_allocation_observer_.get());
+  }
+}
+void MarkerBase::HandleNotFullyConstructedObjects() {
+  if (config_.stack_state == MarkingConfig::StackState::kNoHeapPointers) {
+    mutator_marking_state_.FlushNotFullyConstructedObjects();
+  } else {
+    MarkNotFullyConstructedObjects();
   }
 }
 
@@ -255,8 +263,9 @@ void MarkerBase::EnterAtomicPause(MarkingConfig::StackState stack_state) {
                                            StatsCollector::kMarkAtomicPrologue);
 
   if (ExitIncrementalMarkingIfNeeded(config_, heap())) {
-    // Cancel remaining concurrent/incremental tasks.
-    concurrent_marker_->Cancel();
+    // Cancel remaining incremental tasks. Concurrent marking jobs are left to
+    // run in parallel with the atomic pause until the mutator thread runs out
+    // of work.
     incremental_marking_handle_.Cancel();
     heap().stats_collector()->UnregisterObserver(
         incremental_marking_allocation_observer_.get());
@@ -269,11 +278,17 @@ void MarkerBase::EnterAtomicPause(MarkingConfig::StackState stack_state) {
   {
     // VisitRoots also resets the LABs.
     VisitRoots(config_.stack_state);
-    if (config_.stack_state == MarkingConfig::StackState::kNoHeapPointers) {
-      mutator_marking_state_.FlushNotFullyConstructedObjects();
-      DCHECK(marking_worklists_.not_fully_constructed_worklist()->IsEmpty());
+    HandleNotFullyConstructedObjects();
+  }
+  if (heap().marking_support() ==
+      MarkingConfig::MarkingType::kIncrementalAndConcurrent) {
+    // Start parallel marking.
+    mutator_marking_state_.Publish();
+    if (concurrent_marking_active_) {
+      concurrent_marker_->NotifyIncrementalMutatorStepCompleted();
     } else {
-      MarkNotFullyConstructedObjects();
+      concurrent_marker_->Start();
+      concurrent_marking_active_ = true;
     }
   }
 }
@@ -414,6 +429,20 @@ void MarkerBase::AdvanceMarkingOnAllocation() {
   }
 }
 
+bool MarkerBase::CancelConcurrentMarkingIfNeeded() {
+  if (config_.marking_type != MarkingConfig::MarkingType::kAtomic ||
+      !concurrent_marking_active_)
+    return false;
+
+  concurrent_marker_->Cancel();
+  concurrent_marking_active_ = false;
+  // Concurrent markers may have pushed some "leftover" in-construction objects
+  // after flushing in EnterAtomicPause.
+  HandleNotFullyConstructedObjects();
+  DCHECK(marking_worklists_.not_fully_constructed_worklist()->IsEmpty());
+  return true;
+}
+
 bool MarkerBase::AdvanceMarkingWithLimits(v8::base::TimeDelta max_duration,
                                           size_t marked_bytes_limit) {
   bool is_done = false;
@@ -431,6 +460,9 @@ bool MarkerBase::AdvanceMarkingWithLimits(v8::base::TimeDelta max_duration,
     if (is_done && VisitCrossThreadPersistentsIfNeeded()) {
       // Both limits are absolute and hence can be passed along without further
       // adjustment.
+      is_done = ProcessWorklistsWithDeadline(marked_bytes_limit, deadline);
+    }
+    if (is_done && CancelConcurrentMarkingIfNeeded()) {
       is_done = ProcessWorklistsWithDeadline(marked_bytes_limit, deadline);
     }
     schedule_.UpdateMutatorThreadMarkedBytes(
@@ -592,16 +624,8 @@ void MarkerBase::WaitForConcurrentMarkingForTesting() {
   concurrent_marker_->JoinForTesting();
 }
 
-void MarkerBase::NotifyCompactionCancelled() {
-  // Compaction cannot be cancelled while concurrent marking is active.
-  DCHECK_EQ(MarkingConfig::MarkingType::kAtomic, config_.marking_type);
-  DCHECK_IMPLIES(concurrent_marker_, !concurrent_marker_->IsActive());
-  mutator_marking_state_.NotifyCompactionCancelled();
-}
-
-Marker::Marker(Key key, HeapBase& heap, cppgc::Platform* platform,
-               MarkingConfig config)
-    : MarkerBase(key, heap, platform, config),
+Marker::Marker(HeapBase& heap, cppgc::Platform* platform, MarkingConfig config)
+    : MarkerBase(heap, platform, config),
       marking_visitor_(heap, mutator_marking_state_),
       conservative_marking_visitor_(heap, mutator_marking_state_,
                                     marking_visitor_) {

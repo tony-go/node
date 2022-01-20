@@ -597,8 +597,8 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
   // embedder fields as well as the number of embedder fields.
   // The |function_has_prototype_slot| parameter is needed only for
   // JSFunction objects.
-  static int GetHeaderSize(InstanceType instance_type,
-                           bool function_has_prototype_slot = false);
+  static V8_EXPORT_PRIVATE int GetHeaderSize(
+      InstanceType instance_type, bool function_has_prototype_slot = false);
   static inline int GetHeaderSize(Map map);
 
   static inline int GetEmbedderFieldsStartOffset(Map map);
@@ -616,10 +616,10 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
   // garbage collection treatment.
   // TODO(mlippautz): Make check exact and replace the pattern match in
   // Heap::TracePossibleWrapper.
-  bool IsApiWrapper();
+  V8_EXPORT_PRIVATE bool IsApiWrapper() const;
 
   // Same as IsApiWrapper() but also allow dropping the wrapper on minor GCs.
-  bool IsDroppableApiWrapper();
+  bool IsDroppableApiWrapper() const;
 
   // Returns a new map with all transitions dropped from the object's current
   // map and the ElementsKind set.
@@ -683,8 +683,8 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
   // in which this method is meant to be used, and what guarantees it
   // provides against invalid reads from another thread during object
   // mutation.
-  inline base::Optional<Object> RawInobjectPropertyAt(Map original_map,
-                                                      FieldIndex index) const;
+  inline base::Optional<Object> RawInobjectPropertyAt(
+      PtrComprCageBase cage_base, Map original_map, FieldIndex index) const;
 
   inline void FastPropertyAtPut(FieldIndex index, Object value,
                                 WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
