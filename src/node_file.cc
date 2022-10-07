@@ -41,6 +41,8 @@
 #include <cerrno>
 #include <climits>
 
+#include <iostream>
+
 #if defined(__MINGW32__) || defined(_MSC_VER)
 # include <io.h>
 #endif
@@ -792,6 +794,71 @@ void AfterOpenFileHandle(uv_fs_t* req) {
     req_wrap->Resolve(fd->object());
   }
 }
+// TODO(tony): add open and stat request
+// and close them in NewRead_AfterRead
+struct read_file_ctx {
+  uv_buf_t buf;
+  unsigned int buf_len;
+  uv_file file;
+};
+
+void NewRead_AfterRead(uv_fs_t* read_req) {
+  FSReqBase* req_wrap = FSReqBase::from_req(read_req);
+  FSReqAfterScope after(req_wrap, read_req);
+  read_file_ctx* ctx = static_cast<read_file_ctx*>(read_req->data);
+
+  FS_ASYNC_TRACE_END1(
+      read_req->fs_type, req_wrap, "result", static_cast<int>(read_req->result))
+
+  std::cout << "NewRead_AfterRead" << std::endl;
+  std::printf("data: %s \n", ctx->buf.base);
+
+  // Note: not sure about this as the buffer is coming from js land
+  // delete[] ctx->buf.base;
+  // delete ctx;
+  // read_req->data = nullptr;
+
+  req_wrap->Resolve(Integer::New(req_wrap->env()->isolate(), read_req->result));
+}
+
+void NewRead_AfterStat(uv_fs_t* stat_req) {
+  FSReqBase* req_wrap = FSReqBase::from_req(stat_req);
+  FS_ASYNC_TRACE_END1(
+      stat_req->fs_type, req_wrap, "result", static_cast<int>(stat_req->result))
+
+  // TODO(tony): check if the file is not empty
+
+  // char* buffer = new char[4096];
+  // uv_buf_t buf = uv_buf_init(buffer, 4096);
+  // ctx->buf = buf;
+  // stat_req->data = ctx;
+  read_file_ctx* ctx = static_cast<read_file_ctx*>(stat_req->data);
+
+  FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
+  uv_fs_read(req_wrap->env()->event_loop(),
+             req_wrap->req(),
+             req_wrap->get_file(),
+             &ctx->buf,
+             ctx->buf_len,
+             0,
+             NewRead_AfterRead);
+}
+
+void NewRead_AfterOpen(uv_fs_t* open_req) {
+  FSReqBase* req_wrap = FSReqBase::from_req(open_req);
+  uv_file file;
+  FS_ASYNC_TRACE_END1(
+      open_req->fs_type, req_wrap, "result", static_cast<int>(open_req->result))
+  // TODO(tony): use read_file_ctx
+  req_wrap->set_file(open_req->result);
+
+  const char* path = open_req->path;
+  FS_ASYNC_TRACE_BEGIN0(UV_FS_STAT, req_wrap)
+  uv_fs_stat(req_wrap->env()->event_loop(),
+             req_wrap->req(),
+             path,
+             NewRead_AfterStat);
+}
 
 // Reverse the logic applied by path.toNamespacedPath() to create a
 // namespace-prefixed path.
@@ -1087,6 +1154,16 @@ static void InternalModuleStat(const FunctionCallbackInfo<Value>& args) {
   args.GetReturnValue().Set(rc);
 }
 
+/**
+ *
+ * Wrapper for stat(2)
+ *
+ * 0 path     BufferValue. path of the file
+ * 1 wwww     bool
+ * 2 req      FSReqBase
+ *
+ *
+ */
 static void Stat(const FunctionCallbackInfo<Value>& args) {
   BindingData* binding_data = Environment::GetBindingData<BindingData>(args);
   Environment* env = binding_data->env();
@@ -1825,6 +1902,17 @@ static void ReadDir(const FunctionCallbackInfo<Value>& args) {
   }
 }
 
+/*
+ * Wrapper for open(2).
+ *
+ * status = fs.open(path, flags, mode, req, ctx)
+ *
+ * 0 path       BufferValue. path of the file
+ * 1 flags      int32. file system flags
+ * 2 mode       int32. permissions
+ * 3 req        FSReqBase. ???
+ * 4 ctx        xxx. ??? (optional)
+ */
 static void Open(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
 
@@ -1845,7 +1933,12 @@ static void Open(const FunctionCallbackInfo<Value>& args) {
     req_wrap_async->set_is_plain_open(true);
     FS_ASYNC_TRACE_BEGIN1(
         UV_FS_OPEN, req_wrap_async, "path", TRACE_STR_COPY(*path))
-    AsyncCall(env, req_wrap_async, args, "open", UTF8, AfterInteger,
+    AsyncCall(env,
+              req_wrap_async,
+              args,
+              "open",
+              UTF8,
+              AfterInteger,
               uv_fs_open, *path, flags, mode);
   } else {  // open(path, flags, mode, undefined, ctx)
     CHECK_EQ(argc, 5);
@@ -2135,6 +2228,64 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
                                 uv_fs_write, fd, &uvbuf, 1, pos);
     FS_SYNC_TRACE_END(write, "bytesWritten", bytesWritten);
     args.GetReturnValue().Set(bytesWritten);
+  }
+}
+
+/*
+ * readFile
+ *
+ * path       BufferValue       file's path
+ * flags      Int32             files's flags
+ * mode       Int32             file's mode
+ * buffer     Local<Object>     buffer to store result
+ * len        Int32             length of the buffer 
+ *
+ */
+static void NewReadFile(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+
+  const int argc = args.Length();
+  CHECK_GE(argc, 3);
+
+  BufferValue path(env->isolate(), args[0]);
+  CHECK_NOT_NULL(*path);
+
+  CHECK(args[1]->IsInt32());
+  const int flags = args[1].As<Int32>()->Value();
+
+  CHECK(args[2]->IsInt32());
+  const int mode = args[2].As<Int32>()->Value();
+
+  CHECK(Buffer::HasInstance(args[4]));
+  Local<Object> buffer_obj = args[4].As<Object>();
+  char* buffer_data = Buffer::Data(buffer_obj);
+  size_t buffer_length = Buffer::Length(buffer_obj);
+
+  CHECK(args[5]->IsInt32());
+  const size_t len = static_cast<size_t>(args[5].As<Int32>()->Value());
+  CHECK(Buffer::IsWithinBounds(0, len, buffer_length));
+
+  FSReqBase* req_wrap = GetReqWrap(args, 3);
+  if (req_wrap != nullptr) {  // open(path, flags, mode, req)
+    req_wrap->set_is_plain_open(true);
+
+    // create a context
+    read_file_ctx* ctx = new read_file_ctx;
+    // enrich context
+    ctx->buf = uv_buf_init(buffer_data, len);
+    ctx->buf_len = len;
+    // set the whole context in the request
+    req_wrap->req()->data = ctx;
+
+    FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
+    uv_fs_open(env->event_loop(),
+               req_wrap->req(),
+               *path,
+               flags,
+               mode,
+               NewRead_AfterOpen);
+  } else {  // open(path, flags, mode, undefined, ctx)
+    // TODO(tony): implement sync
   }
 }
 
@@ -2608,6 +2759,7 @@ void Initialize(Local<Object> target,
   SetMethod(context, target, "open", Open);
   SetMethod(context, target, "openFileHandle", OpenFileHandle);
   SetMethod(context, target, "read", Read);
+  SetMethod(context, target, "newReadFile", NewReadFile);
   SetMethod(context, target, "readBuffers", ReadBuffers);
   SetMethod(context, target, "fdatasync", Fdatasync);
   SetMethod(context, target, "fsync", Fsync);
@@ -2724,6 +2876,7 @@ void RegisterExternalReferences(ExternalReferenceRegistry* registry) {
   registry->Register(Open);
   registry->Register(OpenFileHandle);
   registry->Register(Read);
+  registry->Register(NewReadFile);
   registry->Register(ReadBuffers);
   registry->Register(Fdatasync);
   registry->Register(Fsync);

@@ -278,11 +278,21 @@ template <typename Func, typename... Args>
 FSReqBase* AsyncCall(Environment* env,
                      FSReqBase* req_wrap,
                      const v8::FunctionCallbackInfo<v8::Value>& args,
-                     const char* syscall, enum encoding enc,
-                     uv_fs_cb after, Func fn, Args... fn_args) {
-  return AsyncDestCall(env, req_wrap, args,
-                       syscall, nullptr, 0, enc,
-                       after, fn, fn_args...);
+                     const char* syscall, 
+                     enum encoding enc,
+                     uv_fs_cb after, 
+                     Func fn, 
+                     Args... fn_args) {
+  return AsyncDestCall(env, 
+                       req_wrap, 
+                       args,
+                       syscall,
+                       nullptr, 
+                       0, 
+                       enc,
+                       after, 
+                       fn, 
+                       fn_args...);
 }
 
 // Template counterpart of SYNC_CALL, except that it only puts
