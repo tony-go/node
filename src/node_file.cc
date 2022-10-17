@@ -794,8 +794,6 @@ void AfterOpenFileHandle(uv_fs_t* req) {
     req_wrap->Resolve(fd->object());
   }
 }
-// TODO(tony): add open and stat request
-// and close them in NewRead_AfterRead
 struct read_file_ctx {
   uv_buf_t buf;
   unsigned int buf_len;
@@ -813,7 +811,6 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
   std::cout << "NewRead_AfterRead" << std::endl;
   std::printf("data: %s \n", ctx->buf.base);
 
-  // Note: not sure about this as the buffer is coming from js land
   // delete[] ctx->buf.base;
   // delete ctx;
   // read_req->data = nullptr;
@@ -828,16 +825,18 @@ void NewRead_AfterStat(uv_fs_t* stat_req) {
 
   // TODO(tony): check if the file is not empty
 
-  // char* buffer = new char[4096];
-  // uv_buf_t buf = uv_buf_init(buffer, 4096);
-  // ctx->buf = buf;
-  // stat_req->data = ctx;
   read_file_ctx* ctx = static_cast<read_file_ctx*>(stat_req->data);
+
+  // enrich context
+  int len = stat_req->statbuf.st_size;
+  char* buffer_data = new char[len];
+  ctx->buf = uv_buf_init(buffer_data, len);
+  ctx->buf_len = len;
 
   FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
   uv_fs_read(req_wrap->env()->event_loop(),
              req_wrap->req(),
-             req_wrap->get_file(),
+             ctx->file,
              &ctx->buf,
              ctx->buf_len,
              0,
@@ -846,11 +845,15 @@ void NewRead_AfterStat(uv_fs_t* stat_req) {
 
 void NewRead_AfterOpen(uv_fs_t* open_req) {
   FSReqBase* req_wrap = FSReqBase::from_req(open_req);
-  uv_file file;
   FS_ASYNC_TRACE_END1(
       open_req->fs_type, req_wrap, "result", static_cast<int>(open_req->result))
-  // TODO(tony): use read_file_ctx
-  req_wrap->set_file(open_req->result);
+
+  // create a context
+  read_file_ctx* ctx = new read_file_ctx;
+  // enrich context
+  ctx->file = open_req->result;
+  // set the whole context in the request
+  req_wrap->req()->data = ctx;
 
   const char* path = open_req->path;
   FS_ASYNC_TRACE_BEGIN0(UV_FS_STAT, req_wrap)
@@ -2256,26 +2259,9 @@ static void NewReadFile(const FunctionCallbackInfo<Value>& args) {
   CHECK(args[2]->IsInt32());
   const int mode = args[2].As<Int32>()->Value();
 
-  CHECK(Buffer::HasInstance(args[4]));
-  Local<Object> buffer_obj = args[4].As<Object>();
-  char* buffer_data = Buffer::Data(buffer_obj);
-  size_t buffer_length = Buffer::Length(buffer_obj);
-
-  CHECK(args[5]->IsInt32());
-  const size_t len = static_cast<size_t>(args[5].As<Int32>()->Value());
-  CHECK(Buffer::IsWithinBounds(0, len, buffer_length));
-
   FSReqBase* req_wrap = GetReqWrap(args, 3);
   if (req_wrap != nullptr) {  // open(path, flags, mode, req)
     req_wrap->set_is_plain_open(true);
-
-    // create a context
-    read_file_ctx* ctx = new read_file_ctx;
-    // enrich context
-    ctx->buf = uv_buf_init(buffer_data, len);
-    ctx->buf_len = len;
-    // set the whole context in the request
-    req_wrap->req()->data = ctx;
 
     FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
     uv_fs_open(env->event_loop(),
