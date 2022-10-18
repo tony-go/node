@@ -33,6 +33,7 @@
 #include "req_wrap-inl.h"
 #include "stream_base-inl.h"
 #include "string_bytes.h"
+#include "uv.h"
 
 #include <fcntl.h>
 #include <sys/types.h>
@@ -811,11 +812,15 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
   std::cout << "NewRead_AfterRead" << std::endl;
   std::printf("data: %s \n", ctx->buf.base);
 
-  // delete[] ctx->buf.base;
-  // delete ctx;
-  // read_req->data = nullptr;
+  auto buffer = Buffer::New(req_wrap->env()->isolate(),
+                            ctx->buf.base,
+                            ctx->buf.len);
+  req_wrap->Resolve(buffer.ToLocalChecked());
 
-  req_wrap->Resolve(Integer::New(req_wrap->env()->isolate(), read_req->result));
+  // clean and close
+  delete ctx;
+  uv_fs_close(req_wrap->env()->event_loop(), req_wrap->req(), read_req->result, nullptr); 
+  uv_fs_req_cleanup(req_wrap->req());
 }
 
 void NewRead_AfterStat(uv_fs_t* stat_req) {
