@@ -809,9 +809,6 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
   FS_ASYNC_TRACE_END1(
       read_req->fs_type, req_wrap, "result", static_cast<int>(read_req->result))
 
-  std::cout << "NewRead_AfterRead" << std::endl;
-  std::printf("data: %s \n", ctx->buf.base);
-
   auto buffer = Buffer::New(req_wrap->env()->isolate(),
                             ctx->buf.base,
                             ctx->buf.len);

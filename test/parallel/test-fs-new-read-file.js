@@ -15,4 +15,17 @@ async function test() {
   }
 }
 
+async function testUtf8() {
+  try {
+    const filePath = join(process.cwd(), '.nycrc');
+    readFile(filePath, 'utf8', (_, buf) => {
+      console.log(buf);
+    });
+  }
+  catch (error) {
+    console.error('client boom', error);
+  }
+}
+
 test();
+testUtf8();
