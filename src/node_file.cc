@@ -19,7 +19,6 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "node_file.h"  // NOLINT(build/include_inline)
-#include "node.h"
 #include "node_file-inl.h"
 #include "aliased_buffer.h"
 #include "memory_tracker-inl.h"
@@ -34,7 +33,6 @@
 #include "req_wrap-inl.h"
 #include "stream_base-inl.h"
 #include "string_bytes.h"
-#include "uv.h"
 
 #include <fcntl.h>
 #include <sys/types.h>
@@ -42,8 +40,6 @@
 #include <cstring>
 #include <cerrno>
 #include <climits>
-
-#include <iostream>
 
 #if defined(__MINGW32__) || defined(_MSC_VER)
 # include <io.h>
