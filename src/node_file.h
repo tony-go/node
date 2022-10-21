@@ -1,7 +1,10 @@
 #ifndef SRC_NODE_FILE_H_
 #define SRC_NODE_FILE_H_
 
+#include "node.h"
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+
+#include <optional>
 
 #include "aliased_buffer.h"
 #include "node_messaging.h"
@@ -87,16 +90,17 @@ class FSReqBase : public ReqWrap<uv_fs_t> {
 
   const char* syscall() const { return syscall_; }
   const char* data() const { return has_data_ ? *buffer_ : nullptr; }
-  enum encoding encoding() const { return encoding_; }
+
+  enum encoding encoding() const { return encoding_.value_or(UTF8); }
+  std::optional<enum encoding> get_opt_encoding() { return encoding_; }
+  void set_endcoding(enum encoding val) { encoding_ = val; }
+
   bool use_bigint() const { return use_bigint_; }
   bool is_plain_open() const { return is_plain_open_; }
   bool with_file_types() const { return with_file_types_; }
 
   void set_is_plain_open(bool value) { is_plain_open_ = value; }
   void set_with_file_types(bool value) { with_file_types_ = value; }
-  void set_file(uv_file file) { file_ = file; }
-  uv_file get_file() const { return file_; }
-  void release_file() { file_ = -1; }
 
   FSContinuationData* continuation_data() const {
     return continuation_data_.get();
@@ -118,13 +122,12 @@ class FSReqBase : public ReqWrap<uv_fs_t> {
 
  private:
   std::unique_ptr<FSContinuationData> continuation_data_;
-  enum encoding encoding_ = UTF8;
+  std::optional<enum encoding> encoding_ = std::nullopt;
   bool has_data_ = false;
   bool use_bigint_ = false;
   bool is_plain_open_ = false;
   bool with_file_types_ = false;
   const char* syscall_ = nullptr;
-  uv_file file_ = -1;
 
   BaseObjectPtr<BindingData> binding_data_;
 

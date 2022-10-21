@@ -19,6 +19,7 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "node_file.h"  // NOLINT(build/include_inline)
+#include "node.h"
 #include "node_file-inl.h"
 #include "aliased_buffer.h"
 #include "memory_tracker-inl.h"
@@ -809,12 +810,33 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
   FS_ASYNC_TRACE_END1(
       read_req->fs_type, req_wrap, "result", static_cast<int>(read_req->result))
 
-  auto buffer = Buffer::New(req_wrap->env()->isolate(),
-                            ctx->buf.base,
-                            ctx->buf.len);
-  req_wrap->Resolve(buffer.ToLocalChecked());
+
+  std::optional<enum encoding> encoding = req_wrap->get_opt_encoding();
+  if (encoding) {
+    Local<Value> error;
+    MaybeLocal<Value> str = StringBytes::Encode(req_wrap->env()->isolate(),
+                                   ctx->buf.base,
+                                   ctx->buf_len,
+                                   encoding.value(),
+                                   &error);
+    req_wrap->Resolve(str.ToLocalChecked());
+  } else {
+    MaybeLocal<Object> buffer = Buffer::New(req_wrap->env()->isolate(),
+                              ctx->buf.base,
+                              ctx->buf.len);
+    req_wrap->Resolve(buffer.ToLocalChecked());
+  }
+
+  // TODO(tony): handle error
+  // if (!maybe_ret.ToLocal(&ret)) {
+  //   CHECK(!error.IsEmpty());
+  //   isolate->ThrowException(error);
+  //   return;
+  // }
 
   // clean and close
+  // Note: probably not the best idea at the moment 
+  // as uv_fs_close will be syncn maybe we could use a cb
   delete ctx;
   uv_fs_close(req_wrap->env()->event_loop(), req_wrap->req(), read_req->result, nullptr); 
   uv_fs_req_cleanup(req_wrap->req());
@@ -2261,9 +2283,13 @@ static void NewReadFile(const FunctionCallbackInfo<Value>& args) {
   CHECK(args[2]->IsInt32());
   const int mode = args[2].As<Int32>()->Value();
 
-  FSReqBase* req_wrap = GetReqWrap(args, 3);
-  if (req_wrap != nullptr) {  // open(path, flags, mode, req)
+  FSReqBase* req_wrap = GetReqWrap(args, 4);
+  if (req_wrap != nullptr) {
     req_wrap->set_is_plain_open(true);
+    if (args[3]->IsString()) {
+      const enum encoding encoding = ParseEncoding(args.GetIsolate(), args[3]);
+      req_wrap->set_endcoding(encoding);
+    }
 
     FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
     uv_fs_open(env->event_loop(),
@@ -2272,7 +2298,7 @@ static void NewReadFile(const FunctionCallbackInfo<Value>& args) {
                flags,
                mode,
                NewRead_AfterOpen);
-  } else {  // open(path, flags, mode, undefined, ctx)
+  } else {
     // TODO(tony): implement sync
   }
 }
