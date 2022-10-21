@@ -1,10 +1,10 @@
 'use strict';
 
-const { readFile } = require('fs');
+const { readFile, readFileSync } = require('fs');
 const { join } = require('path');
 const assert = require('assert');
 
-async function test() {
+function test() {
   try {
     const filePath = join(process.cwd(), '.nycrc');
     readFile(filePath, (_, buf) => {
@@ -17,7 +17,7 @@ async function test() {
   }
 }
 
-async function testUtf8() {
+function testUtf8() {
   try {
     const filePath = join(process.cwd(), '.nycrc');
     readFile(filePath, 'utf8', (_, string) => {
@@ -30,5 +30,19 @@ async function testUtf8() {
   }
 }
 
+function testUtf8Sync() {
+  try {
+    const filePath = join(process.cwd(), '.nycrc');
+    const string = readFileSync(filePath, 'utf8');
+    console.log('string: ', string);
+    assert.ok(typeof string === 'string');
+  }
+  catch (error) {
+    console.error('client boom', error);
+  }
+}
+
+
 test();
 testUtf8();
+testUtf8Sync();

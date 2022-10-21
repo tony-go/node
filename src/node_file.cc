@@ -827,7 +827,7 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
     req_wrap->Resolve(buffer.ToLocalChecked());
   }
 
-  // TODO(tony): handle error
+  // TODO(tony): use this to handle error
   // if (!maybe_ret.ToLocal(&ret)) {
   //   CHECK(!error.IsEmpty());
   //   isolate->ThrowException(error);
