@@ -8,7 +8,6 @@ function test() {
   try {
     const filePath = join(process.cwd(), '.nycrc');
     readFile(filePath, (_, buf) => {
-      console.log('buffer: ', buf);
       assert.ok(buf instanceof Buffer);
     });
   }
@@ -21,7 +20,6 @@ function testUtf8() {
   try {
     const filePath = join(process.cwd(), '.nycrc');
     readFile(filePath, 'utf8', (_, string) => {
-      console.log('string: ', string);
       assert.ok(typeof string === 'string');
     });
   }
@@ -30,12 +28,13 @@ function testUtf8() {
   }
 }
 
-function testUtf8Sync() {
+function testNoExist() {
   try {
-    const filePath = join(process.cwd(), '.nycrc');
-    const string = readFileSync(filePath, 'utf8');
-    console.log('string: ', string);
-    assert.ok(typeof string === 'string');
+    const filePath = join(process.cwd(), '.zooba');
+    readFile(filePath, (err) => {
+      assert.ok(err);
+      assert.strictEqual(err.code, 'ENOENT');
+    });
   }
   catch (error) {
     console.error('client boom', error);
@@ -45,4 +44,4 @@ function testUtf8Sync() {
 
 test();
 testUtf8();
-testUtf8Sync();
+testNoExist();
