@@ -865,8 +865,24 @@ void NewRead_AfterStat(uv_fs_t* stat_req) {
 
 void NewRead_AfterOpen(uv_fs_t* open_req) {
   FSReqBase* req_wrap = FSReqBase::from_req(open_req);
+  int result = static_cast<int>(open_req->result);
+  const char* path = open_req->path;
+
   FS_ASYNC_TRACE_END1(
-      open_req->fs_type, req_wrap, "result", static_cast<int>(open_req->result))
+      open_req->fs_type, req_wrap, "result", result)
+
+  if (result < 0) {
+    FSReqAfterScope after(req_wrap, open_req);
+
+    open_req->result = result;
+    req_wrap->Reject(
+      UVException(req_wrap->env()->isolate(), result, "open"));
+
+    req_wrap = nullptr;
+    // open_req->path = nullptr;
+
+    return;
+  }
 
   // create a context
   read_file_ctx* ctx = new read_file_ctx;
@@ -875,7 +891,6 @@ void NewRead_AfterOpen(uv_fs_t* open_req) {
   // set the whole context in the request
   req_wrap->req()->data = ctx;
 
-  const char* path = open_req->path;
   FS_ASYNC_TRACE_BEGIN0(UV_FS_STAT, req_wrap)
   uv_fs_stat(req_wrap->env()->event_loop(),
              req_wrap->req(),
