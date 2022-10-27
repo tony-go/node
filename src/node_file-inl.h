@@ -285,6 +285,37 @@ FSReqBase* AsyncCall(Environment* env,
                        after, fn, fn_args...);
 }
 
+// Returns nullptr if the operation fails from the start.
+template <typename Func, typename... Args>
+FSReqBase* AsyncDestCall(Environment* env, FSReqBase* req_wrap,
+                         const char* syscall, const char* dest,
+                         size_t len, enum encoding enc, uv_fs_cb after,
+                         Func fn, Args... fn_args) {
+  CHECK_NOT_NULL(req_wrap);
+  req_wrap->Init(syscall, dest, len, enc);
+  int err = req_wrap->Dispatch(fn, fn_args..., after);
+  if (err < 0) {
+    uv_fs_t* uv_req = req_wrap->req();
+    uv_req->result = err;
+    uv_req->path = nullptr;
+    after(uv_req);  // after may delete req_wrap if there is an error
+    req_wrap = nullptr;
+  }
+
+  return req_wrap;
+}
+
+// Returns nullptr if the operation fails from the start.
+template <typename Func, typename... Args>
+FSReqBase* AsyncCall(Environment* env,
+                     FSReqBase* req_wrap,
+                     const char* syscall, enum encoding enc,
+                     uv_fs_cb after, Func fn, Args... fn_args) {
+  return AsyncDestCall(env, req_wrap,
+                       syscall, nullptr, 0, enc,
+                       after, fn, fn_args...);
+}
+
 // Template counterpart of SYNC_CALL, except that it only puts
 // the error number and the syscall in the context instead of
 // creating an error in the C++ land.

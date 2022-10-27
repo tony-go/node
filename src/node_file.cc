@@ -853,14 +853,21 @@ void NewRead_AfterStat(uv_fs_t* stat_req) {
   ctx->buf = uv_buf_init(buffer_data, len);
   ctx->buf_len = len;
 
-  FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
-  uv_fs_read(req_wrap->env()->event_loop(),
-             req_wrap->req(),
-             ctx->file,
-             &ctx->buf,
-             ctx->buf_len,
-             0,
-             NewRead_AfterRead);
+  // FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
+  // uv_fs_read(req_wrap->env()->event_loop(),
+  //            req_wrap->req(),
+  //            ctx->file,
+  //            &ctx->buf,
+  //            ctx->buf_len,
+  //            0,
+  //            NewRead_AfterRead);
+  AsyncCall(req_wrap->env(),
+            req_wrap, 
+            "read",
+            req_wrap->encoding(),
+            NewRead_AfterRead,
+            uv_fs_read,
+            ctx->file, &ctx->buf, ctx->buf_len, 0);
 }
 
 void NewRead_AfterOpen(uv_fs_t* open_req) {
@@ -891,11 +898,19 @@ void NewRead_AfterOpen(uv_fs_t* open_req) {
   // set the whole context in the request
   req_wrap->req()->data = ctx;
 
-  FS_ASYNC_TRACE_BEGIN0(UV_FS_STAT, req_wrap)
-  uv_fs_stat(req_wrap->env()->event_loop(),
-             req_wrap->req(),
-             path,
-             NewRead_AfterStat);
+  // FS_ASYNC_TRACE_BEGIN0(UV_FS_STAT, req_wrap)
+  // uv_fs_stat(req_wrap->env()->event_loop(),
+  //            req_wrap->req(),
+  //            path,
+  //            NewRead_AfterStat);
+
+  AsyncCall(req_wrap->env(),
+            req_wrap, 
+            "stat",
+            req_wrap->encoding(),
+            NewRead_AfterStat,
+            uv_fs_stat,
+            path);
 }
 
 // Reverse the logic applied by path.toNamespacedPath() to create a
@@ -2302,13 +2317,20 @@ static void NewReadFile(const FunctionCallbackInfo<Value>& args) {
       req_wrap->set_endcoding(encoding);
     }
 
-    FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
-    uv_fs_open(env->event_loop(),
-               req_wrap->req(),
-               *path,
-               flags,
-               mode,
-               NewRead_AfterOpen);
+    // FS_ASYNC_TRACE_BEGIN0(UV_FS_READ, req_wrap)
+    // uv_fs_open(env->event_loop(),
+    //            req_wrap->req(),
+    //            *path,
+    //            flags,
+    //            mode,
+    //            NewRead_AfterOpen);
+    AsyncCall(env,
+              req_wrap, 
+              "open",
+              req_wrap->encoding(),
+              NewRead_AfterOpen,
+              uv_fs_open,
+              *path, flags, mode);
   } else {
     // TODO(tony): implement sync
   }

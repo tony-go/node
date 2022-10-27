@@ -127,9 +127,10 @@ struct MakeLibuvRequestCallback<ReqT, void(*)(ReqT*, Args...)> {
   }
 
   static F For(ReqWrap<ReqT>* req_wrap, F v) {
-    CHECK_NULL(req_wrap->original_callback_);
-    req_wrap->original_callback_ =
-        reinterpret_cast<typename ReqWrap<ReqT>::callback_t>(v);
+    if (req_wrap->original_callback_ == nullptr) {
+      req_wrap->original_callback_ =
+          reinterpret_cast<typename ReqWrap<ReqT>::callback_t>(v);
+    }
     return Wrapper;
   }
 };
