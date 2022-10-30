@@ -800,26 +800,25 @@ struct read_file_ctx {
 
 void NewRead_AfterRead(uv_fs_t* read_req) {
   FSReqBase* req_wrap = FSReqBase::from_req(read_req);
-  FSReqAfterScope after(req_wrap, read_req);
   read_file_ctx* ctx = static_cast<read_file_ctx*>(read_req->data);
+  HandleScope scope(req_wrap->env()->isolate());  
 
   FS_ASYNC_TRACE_END1(
       read_req->fs_type, req_wrap, "result", static_cast<int>(read_req->result))
-
 
   std::optional<enum encoding> encoding = req_wrap->get_opt_encoding();
   if (encoding) {
     Local<Value> error;
     MaybeLocal<Value> str = StringBytes::Encode(req_wrap->env()->isolate(),
-                                   ctx->buf.base,
-                                   ctx->buf_len,
-                                   encoding.value(),
-                                   &error);
+                                                ctx->buf.base,
+                                                ctx->buf_len,
+                                                encoding.value(),
+                                                &error);
     req_wrap->Resolve(str.ToLocalChecked());
   } else {
-    MaybeLocal<Object> buffer = Buffer::New(req_wrap->env()->isolate(),
-                              ctx->buf.base,
-                              ctx->buf.len);
+    MaybeLocal<Object> buffer = Buffer::New(req_wrap->env(),
+                                            ctx->buf.base,
+                                            ctx->buf.len);
     req_wrap->Resolve(buffer.ToLocalChecked());
   }
 
@@ -833,9 +832,9 @@ void NewRead_AfterRead(uv_fs_t* read_req) {
   // clean and close
   // Note: probably not the best idea at the moment 
   // as uv_fs_close will be syncn maybe we could use a cb
-  delete ctx;
   uv_fs_close(req_wrap->env()->event_loop(), req_wrap->req(), read_req->result, nullptr); 
   uv_fs_req_cleanup(req_wrap->req());
+  delete ctx;
 }
 
 void NewRead_AfterStat(uv_fs_t* stat_req) {
